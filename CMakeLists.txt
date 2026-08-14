@@ -3,12 +3,22 @@ cmake_minimum_required(VERSION 3.24)
 project(gitx VERSION 1.0.0 LANGUAGES CXX)
 
 option(GITX_FETCH_DEPS "Download libgit2 when it is not installed" ON)
-option(GITX_ENABLE_SSH "Enable SSH transport support (requires libssh2)" ON)
+option(GITX_ENABLE_SSH "Enable SSH transport support (libssh2, or system OpenSSH on Windows)" ON)
 option(GITX_ENABLE_HTTPS "Enable HTTPS transport support (OpenSSL/SecureTransport/WinHTTP)" ON)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Windows ships an OpenSSH client; use libgit2's exec backend there so no
+# extra dependency is needed. Everywhere else we link against libssh2.
+if(WIN32 AND GITX_ENABLE_SSH)
+  set(GITX_SSH_BACKEND "exec")
+elseif(GITX_ENABLE_SSH)
+  set(GITX_SSH_BACKEND "ON")
+else()
+  set(GITX_SSH_BACKEND "OFF")
+endif()
 
 find_package(libgit2 CONFIG QUIET)
 
@@ -17,7 +27,7 @@ if(NOT TARGET libgit2::libgit2 AND NOT TARGET libgit2)
     set(BUILD_CLAR OFF CACHE BOOL "" FORCE)
     set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    set(USE_SSH ${GITX_ENABLE_SSH} CACHE BOOL "" FORCE)
+    set(USE_SSH "${GITX_SSH_BACKEND}" CACHE STRING "" FORCE)
     set(USE_HTTPS ${GITX_ENABLE_HTTPS} CACHE BOOL "" FORCE)
     add_subdirectory(third_party/libgit2-1.8.4 EXCLUDE_FROM_ALL)
   elseif(NOT GITX_FETCH_DEPS)
@@ -27,7 +37,7 @@ if(NOT TARGET libgit2::libgit2 AND NOT TARGET libgit2)
     set(BUILD_CLAR OFF CACHE BOOL "" FORCE)
     set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    set(USE_SSH ${GITX_ENABLE_SSH} CACHE BOOL "" FORCE)
+    set(USE_SSH "${GITX_SSH_BACKEND}" CACHE STRING "" FORCE)
     set(USE_HTTPS ${GITX_ENABLE_HTTPS} CACHE BOOL "" FORCE)
     FetchContent_Declare(
       libgit2
