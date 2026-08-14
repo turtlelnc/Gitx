@@ -37,5 +37,11 @@ jobs:
       - name: Build
         run: cmake --build build --parallel 4
 
+      # Multi-config generators (MSVC) need an explicit configuration.
+      - name: Test (Windows)
+        if: runner.os == 'Windows'
+        run: ctest --test-dir build -C Debug --output-on-failure
+
       - name: Test
+        if: runner.os != 'Windows'
         run: ctest --test-dir build --output-on-failure

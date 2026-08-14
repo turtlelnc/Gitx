@@ -104,4 +104,4 @@ ctest --test-dir mac-build --output-on-failure
 
 ## 许可
 
-MIT，详见 [LICENSE](LICENSE)。
+gitx 自身代码采用 MIT 许可证，详见 [LICENSE](LICENSE)。链接或随包分发的第三方组件（libgit2、zlib、libssh2、OpenSSL）各自的许可证与版权声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
