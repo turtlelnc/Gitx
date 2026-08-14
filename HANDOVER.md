@@ -1,67 +1,57 @@
-# gitx 开发交接（2026-08-14）
+# gitx 开发交接（2026-08-15 · v1.0.0 已发布）
 
-## 当前目标
+## 当前状态
 
-`gitx` 是 C++20 跨平台 Git CLI：使用 libgit2 操作标准 Git 仓库，提供中文向导、团队 TOML 规则、分支/提交/合并/远端操作，以及内置自解压交付包。
+`gitx` 1.0.0 已定稿：C++20 跨平台 Git CLI，使用 libgit2 v1.8.4，提供中文向导、团队 TOML 规则、分支/提交/合并/变基/远端操作，以及带完整性校验与自动清理的自解压交付包。本工作区已初始化为 git 仓库（初始提交 `7a1bd0a`）。
 
-## 已完成的工作
+## v1.0.0 完成的工作（相对 0.1.0 新增）
 
-- 创建 CMake 工程、MIT 许可证、README、配置单元测试。
-- 实现 `start`、`open`、`status`、`save`、`history`、`branch`、`integrate merge`、`sync`、`stash`、`tag`、`config` 等 CLI 入口。
-- 实现 `.gitx/config.toml`：提交格式、分支前缀、合并前工作区检查，以及团队/个人一对一命令别名读取。
-- 实现 libgit2 仓库操作层：初始化、克隆、状态、暂存、提交、分支、标签、stash、合并冲突逐块问答、fetch/pull/push。
-- 新增 `gitx bundle create <输出文件> <运行时入口相对路径> <产物或依赖目录...>`：把当前仓库源码（不含 `.git`）和指定运行时目录压缩到 gitx 可执行文件尾部。该 SFX 启动时会解压到临时目录并启动入口。
-- 用户已下载并解压 libgit2 v1.8.4 至 `third_party/libgit2-1.8.4`；CMake 现优先使用此本地目录，不再需要联网下载它。
-
-## 本机依赖与构建命令
-
-- 编译器：MinGW g++ 15.2.0（C++20）。
-- 构建系统：CMake 4.2、MinGW Makefiles。
-- 本地依赖：`third_party/libgit2-1.8.4`，其内置 zlib 用于 bundle 压缩。
-
-```powershell
-cmake -S . -B local-build -G "MinGW Makefiles" -DBUILD_TESTING=ON
-cmake --build local-build --parallel 4
-ctest --test-dir local-build --output-on-failure
-```
-
-若迁移到新设备，复制整个工作区（至少保留 `third_party/libgit2-1.8.4`），安装 CMake 3.24+ 和带 C++20 的编译器后执行以上命令。
-
-## 最后一次构建状态
-
-- 先前的链接失败根因已修复：libgit2 的 `libgit2` 是 OBJECT target，真正可链接 target 是 `libgit2package`。
-- 已在 macOS（Apple clang 21、CMake 4.1）上从零验证：`cmake -S . -B mac-build -DBUILD_TESTING=ON` 配置成功，`cmake --build mac-build --parallel 8` 全部构建成功（`gitx`、`gitx_core`、`gitx_tests`），`ctest` 全部通过。
-- 修复了三个在此次验证中发现的问题：
-  1. TOML 读取器 `unquote` 未解码基本字符串转义，导致默认 `commit.pattern`（写入为 `\\([^)]+\\)`）加载后变成双反斜杠、永远无法匹配 `feat(cli): ...`。已在 `src/config.cpp` 中补充 TOML 转义解码（`\\`、`\"`、`\n`、`\t`、`\r`、`\b`、`\f`）。
-  2. `GitRepository::init` 未设置 `GIT_REPOSITORY_INIT_MKPATH`，`gitx start <新目录>` 无法创建目录。已在 `src/git_repository.cpp` 中设置该标志。
-  3. `checkout_branch` 先 `set_head` 再 `checkout_head`，切换分支后索引残留旧分支内容（`git status` 显示暂存改动）。已改为先 `git_checkout_tree`（目标分支）再 `set_head`，索引与工作区均正确更新。
-  4. bundle 格式未保存文件权限，解压后入口脚本失去可执行位。已把每文件头部改为 `长度+权限模式+原始大小+压缩大小`，提取时恢复权限；魔数从 `GITXBND1` 升为 `GITXBND2`（旧包不再识别）。
-- 冒烟测试全部通过：start/save/status/history/branch（new+switch）/integrate merge（冲突选择 o 与 t 两条路径）/stash save+pop/tag/config/open/bundle create+运行解压。
+- **联网能力**：`CMakeLists.txt` 新增 `GITX_ENABLE_SSH` / `GITX_ENABLE_HTTPS`（默认 ON）。macOS 用系统 SecureTransport + Homebrew libssh2；Linux 需 libssl-dev/libssh2-1-dev；Windows 用 WinHTTP + libssh2。`sync fetch/pull/push`、`start clone`、`sync publish` 均已实测通过（本地裸仓库往返）。
+- **`integrate rebase <分支>`**：libgit2 `git_rebase_*` 实现；冲突沿用 merge 的 o/t/m/q 逐块问答；`GIT_EAPPLIED`（空补丁，如内容与上游重复）自动跳过，等价 `git rebase --empty=drop`。
+- **`--version` / `-V`**：输出 `gitx 1.0.0 (libgit2 1.8.4)`（`include/gitx/version.hpp` + CMake 注入 `GITX_VERSION`）。
+- **bundle 健壮性**（格式升级 `GITXBND3`）：
+  - 包尾 CRC-32，解压前校验，篡改/损坏即拒绝（已实测翻转 payload 字节被拦截）。
+  - 临时目录无论成功/失败/异常一律清理（try/catch + RAII）。
+  - 递归遍历显式跳过 `.git` 目录（修复在 git 仓库内打包失败的问题）。
+- **自动化测试扩充至 3 个目标**：`gitx.config`、`gitx.repository`（init/commit/branch switch 索引同步/merge 冲突 o 与 t/rebase 空补丁跳过/stash/tag）、`gitx.bundle`（create/extract/launch 往返 + 非 bundle 文件返回 false；入口用原生可执行文件 + 环境变量标记，跨平台，Windows 亦可跑）。
+- **文档**：README 全面更新（三平台构建、团队规范、bundle 用法）、新增 CHANGELOG.md。
+- **CI**：`.github/workflows/ci.yml`，GitHub Actions 三平台矩阵（ubuntu/macos/windows），含各自网络依赖安装。**尚未在任何托管平台启用**——需要把仓库推到 GitHub/Gitee 后才会跑。
 
 ## 本机（macOS）构建命令
 
 ```bash
+brew install libssh2          # SSH 传输；HTTPS 用系统 SecureTransport
 cmake -S . -B mac-build -DBUILD_TESTING=ON
 cmake --build mac-build --parallel 8
 ctest --test-dir mac-build --output-on-failure
 ```
 
-`local-build`、`cmake-build`、`verified-build`、`build` 是 Windows/MinGW 时代的目录，含 `D:/mingw64` 缓存路径，迁移到 macOS 后不可直接复用；如需在 Windows 上构建请重新配置。
+`local-build`、`cmake-build`、`verified-build`、`build` 是 Windows/MinGW 时代目录（缓存 `D:/mingw64` 路径），不可复用；`mac-build` 是本机原生构建。
+
+## v1.0.0 发布产物
+
+- `release/gitx-v1.0.0-macos-arm64`：自解压发布包（约 129MB，含源码 + 自包含运行时）。已实测：复制到其他目录后 `--version` / `start` / `save` / `status` 全部正常，临时目录自动清理。
+- 运行时自包含做法：`release/dist/` 内 gitx + libgitx_core + libgit2.1.8 + libssh2.1 全部用 `install_name_tool` 改写为 `@loader_path` 相对引用，并用 `codesign --force --sign -` ad-hoc 签名（macOS 修改二进制后必须重签，否则 SIGKILL）。
+- 生成命令：`./mac-build/gitx bundle create release/gitx-v1.0.0-macos-arm64 gitx release/dist`（须在仓库根目录运行）。
+- 129MB 主要来自打包全部源码（含 third_party/libgit2 源码树约 100MB）。如后续要瘦身，可在 bundle 时排除 `third_party` 或用更小的 source 目录。
 
 ## 已知限制 / 后续优先项
 
-- 当前本地 libgit2 配置禁用了 SSH 与 HTTPS，因为设备尚未安装 libssh2 / OpenSSL。因此本地仓库功能和 bundle 可编译，联网 Git 操作需要补齐依赖后启用。
-- `integrate rebase` 仍未实现；CLI 目前明确只支持 `integrate merge`。
-- bundle 目前由用户显式列出运行时产物/依赖目录；尚未自动扫描 DLL、`.so` 或 `.dylib`。
-- bundle 解压至临时目录后不清理（已知限制，尚未实现退出后清理策略）；包完整性校验和签名亦未实现。
-- HTTPS 当前代码仅支持临时环境变量 `GITX_HTTPS_USER` / `GITX_HTTPS_TOKEN`，还未实现系统凭据库接入。
-- 单元测试仅有 `config_tests` 一个目标；git_repository / bundle 尚无自动化测试，仅靠手动冒烟。
+- **CI 未激活**：仓库尚未推送至任何托管平台；推送后 `.github/workflows/ci.yml` 才会在 push/PR 时跑三平台构建+测试。Windows/Linux 的编译正确性目前只靠 CI 配置保证，本机未实测。
+- HTTPS 仅支持临时环境变量 `GITX_HTTPS_USER` / `GITX_HTTPS_TOKEN`，尚未实现系统凭据库接入（macOS Keychain / Windows Credential Manager）。
+- bundle 仍由用户显式列出运行时目录；尚未自动扫描依赖的 DLL/.so/.dylib（不过 v1.0.0 发布流程已手工完成等价工作）。
+- bundle 无数字签名；macOS 上分发仍需用户绕过 Gatekeeper（ad-hoc 签名不足以通过公证）。
+- `integrate rebase` 为"整段变基到目标分支"语义，未实现交互式 reword/squash。
+- 无日志/调试开关；错误信息为中文硬编码，未做 i18n 框架。
+- 测试覆盖良好但非穷尽：fetch/pull/push 依赖本地裸仓库手工验证，未纳入自动化测试（需要 `git` 命令，CI 上有）。
 
 ## 关键文件
 
-- `CMakeLists.txt`：依赖解析与构建目标。
-- `src/main.cpp`：CLI 路由与交互。
-- `src/git_repository.cpp`：libgit2 适配层。
-- `src/bundle.cpp`：自解压包格式、压缩、提取和启动。
-- `src/config.cpp`：最小 TOML 读取与团队规范。
-- `README.md`：用户说明。
+- `CMakeLists.txt`：依赖解析、SSH/HTTPS 开关、构建与测试目标。
+- `src/main.cpp`：CLI 路由与交互（含 `--version`）。
+- `src/git_repository.cpp`：libgit2 适配层（含 rebase、fast-forward 辅助）。
+- `src/bundle.cpp`：自解压包格式 `GITXBND3`、压缩、CRC 校验、提取、启动与清理。
+- `src/config.cpp`：最小 TOML 读取（含转义解码）与团队规范。
+- `tests/`：config / git_repository / bundle 三个测试目标。
+- `README.md`、`CHANGELOG.md`：用户说明与版本历史。
+- `.github/workflows/ci.yml`：三平台 CI 矩阵（待托管激活）。

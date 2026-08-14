@@ -59,7 +59,15 @@ void Bundle::create(const fs::path& launcher, const fs::path& output, const fs::
   if (!fs::is_regular_file(launcher)) throw std::runtime_error("找不到 gitx 可执行文件: " + launcher.string());
   fs::copy_file(launcher, output, fs::copy_options::overwrite_existing); std::ofstream out(output, std::ios::binary | std::ios::app); const auto offset = static_cast<std::uint64_t>(out.tellp());
   std::vector<std::pair<fs::path,std::string>> files;
-  for (const auto& item : fs::recursive_directory_iterator(project)) if (item.is_regular_file() && item.path().string().find((project / ".git").string()) != 0) files.emplace_back(item.path(), (fs::path("source") / fs::relative(item.path(), project)).generic_string());
+  const auto git_dir = (project / ".git").string();
+  for (auto iterator = fs::recursive_directory_iterator(project); iterator != fs::recursive_directory_iterator(); ++iterator) {
+    if (iterator->is_directory() && iterator->path().filename() == ".git") {
+      iterator.disable_recursion_pending();
+      continue;
+    }
+    if (!iterator->is_regular_file() || iterator->path().string().find(git_dir) == 0) continue;
+    files.emplace_back(iterator->path(), (fs::path("source") / fs::relative(iterator->path(), project)).generic_string());
+  }
   for (const auto& runtime : runtimes) { if (fs::is_regular_file(runtime)) files.emplace_back(runtime, (fs::path("runtime") / runtime.filename()).generic_string()); else for (const auto& item : fs::recursive_directory_iterator(runtime)) if (item.is_regular_file()) files.emplace_back(item.path(), (fs::path("runtime") / runtime.filename() / fs::relative(item.path(), runtime)).generic_string()); }
   put(out, static_cast<std::uint32_t>(files.size())); const auto entry_name = (fs::path("runtime") / entry).generic_string(); put(out, static_cast<std::uint32_t>(entry_name.size())); out.write(entry_name.data(), entry_name.size()); for (const auto& [file, name] : files) add_file(out, file, name);
   out.flush();
