@@ -39,9 +39,15 @@ jobs:
 
       # Multi-config generators (MSVC) need an explicit configuration. The
       # timeout keeps a stuck test from hanging the job for minutes.
+      # git2.dll lives in a subdirectory of the build tree; it must be on PATH
+      # for the test executables to load it at startup.
       - name: Test (Windows)
         if: runner.os == 'Windows'
-        run: ctest --test-dir build -C Debug --output-on-failure --timeout 300
+        shell: pwsh
+        run: |
+          $env:PATH = "${{ github.workspace }}\build\Debug;$env:PATH"
+          $env:PATH = "${{ github.workspace }}\build\third_party\libgit2-1.8.4\Debug;$env:PATH"
+          ctest --test-dir build -C Debug --output-on-failure --timeout 300
 
       - name: Test
         if: runner.os != 'Windows'
