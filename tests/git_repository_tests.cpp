@@ -41,7 +41,11 @@ std::string read_file(const fs::path& file) {
 
 // Run `git` in `repo` and return whether it exited 0.
 bool git_ok(const fs::path& repo, const std::string& args) {
+#ifdef _WIN32
+  const auto command = "git -C \"" + repo.string() + "\" " + args + " >nul 2>&1";
+#else
   const auto command = "git -C \"" + repo.string() + "\" " + args + " >/dev/null 2>&1";
+#endif
   return std::system(command.c_str()) == 0;
 }
 

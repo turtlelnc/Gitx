@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(gitx VERSION 1.0.0 LANGUAGES CXX)
+project(gitx VERSION 1.0.0 LANGUAGES CXX C)
 
 option(GITX_FETCH_DEPS "Download libgit2 when it is not installed" ON)
 option(GITX_ENABLE_SSH "Enable SSH transport support (libssh2, or system OpenSSH on Windows)" ON)
@@ -47,20 +47,22 @@ if(NOT TARGET libgit2::libgit2 AND NOT TARGET libgit2)
   endif()
 endif()
 
-# zlib resolution: prefer the target libgit2 provides. When libgit2 fell back
-# to its bundled zlib, that target is an OBJECT library — plain link_libraries
-# would not carry its objects into gitx_core, so we must merge them explicitly.
+# zlib resolution: prefer a real zlib target (system ZLIB::ZLIB, or the zlib
+# target libgit2 exposes). When libgit2 fell back to its bundled zlib that
+# target is an OBJECT library, which cannot be linked with link_libraries —
+# we compile the bundled zlib sources straight into gitx_core instead.
 set(GITX_ZLIB_TARGET "")
-set(GITX_ZLIB_OBJECTS "")
+set(GITX_ZLIB_SOURCES "")
 if(TARGET zlib)
   get_target_property(ZLIB_TARGET_TYPE zlib TYPE)
   if(ZLIB_TARGET_TYPE STREQUAL "OBJECT_LIBRARY")
-    set(GITX_ZLIB_OBJECTS $<TARGET_OBJECTS:zlib>)
+    file(GLOB GITX_ZLIB_SOURCES CONFIGURE_DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libgit2-1.8.4/deps/zlib/*.c")
+    set(GITX_ZLIB_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libgit2-1.8.4/deps/zlib")
   else()
     set(GITX_ZLIB_TARGET zlib)
+    get_target_property(GITX_ZLIB_INCLUDE_DIRS zlib INCLUDE_DIRECTORIES)
   endif()
-  get_target_property(GITX_ZLIB_INCLUDE_DIRS zlib INCLUDE_DIRECTORIES)
-  set(GITX_ZLIB_INCLUDE_DIRS ${GITX_ZLIB_INCLUDE_DIRS})
 else()
   find_package(ZLIB QUIET)
   if(NOT ZLIB_FOUND)
@@ -86,14 +88,22 @@ add_library(gitx_core
   src/command_names.cpp
   src/git_repository.cpp
   src/bundle.cpp
-  ${GITX_ZLIB_OBJECTS}
+  ${GITX_ZLIB_SOURCES}
 )
 target_include_directories(gitx_core PUBLIC include)
 target_compile_definitions(gitx_core PUBLIC GITX_VERSION="${PROJECT_VERSION}")
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libgit2-1.8.4/include/git2.h")
   target_include_directories(gitx_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libgit2-1.8.4/include")
 endif()
-if(TARGET zlib AND GITX_ZLIB_INCLUDE_DIRS)
+if(GITX_ZLIB_SOURCES)
+  # The bundled zlib is compiled without gzip file helpers and with the same
+  # feature macros libgit2's own zlib build uses.
+  target_compile_definitions(gitx_core PRIVATE NO_GZIP NO_VIZ STDC HAVE_SYS_TYPES_H HAVE_STDINT_H HAVE_STDDEF_H)
+  if(MINGW OR MSYS)
+    target_compile_definitions(gitx_core PRIVATE Z_HAVE_UNISTD_H _LFS64_LARGEFILE _LARGEFILE64_SOURCE=1)
+  endif()
+endif()
+if(GITX_ZLIB_INCLUDE_DIRS)
   target_include_directories(gitx_core PRIVATE ${GITX_ZLIB_INCLUDE_DIRS})
 endif()
 if(GITX_ZLIB_TARGET)
