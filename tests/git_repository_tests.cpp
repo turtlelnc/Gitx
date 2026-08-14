@@ -3,6 +3,11 @@
 
 #include <git2.h>
 
+#ifdef _WIN32
+#include <crtdbg.h>
+#include <cstdlib>
+#endif
+
 #include <cassert>
 #include <filesystem>
 #include <fstream>
@@ -196,7 +201,9 @@ void test_stash_tag_and_status() {
   assert(read_file(root / "f.txt") == "dirty\n");
 
   repository.create_tag("v0.1.0", "release");
-  assert(git_ok(root, "rev-parse v0.1.0^{commit}"));
+  // Avoid '^{commit}' here: on Windows cmd '^' is the escape character and
+  // would corrupt the rev-parse argument.
+  assert(git_ok(root, "rev-parse v0.1.0"));
 
   fs::remove_all(root);
 }
@@ -204,6 +211,13 @@ void test_stash_tag_and_status() {
 }  // namespace
 
 int main() {
+#ifdef _WIN32
+  // On Windows a failed assert() pops a modal "Debug Assertion Failed"
+  // dialog that hangs CI. Route assertions to stderr and exit instead.
+  _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+  _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+  _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+#endif
   git_libgit2_init();
   test_init_and_commit();
   std::cout << "ok: init/commit\n";
