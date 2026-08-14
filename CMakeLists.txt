@@ -49,16 +49,31 @@ endif()
 
 # zlib resolution: prefer a real zlib target (system ZLIB::ZLIB, or the zlib
 # target libgit2 exposes). When libgit2 fell back to its bundled zlib that
-# target is an OBJECT library, which cannot be linked with link_libraries —
-# we compile the bundled zlib sources straight into gitx_core instead.
+# target is an OBJECT library and — more importantly — a stripped-down build
+# without compress.c, so it cannot satisfy bundle.cpp's compress2/uncompress.
+# In that case we compile the full zlib sources from third_party into
+# gitx_core instead.
 set(GITX_ZLIB_TARGET "")
 set(GITX_ZLIB_SOURCES "")
 if(TARGET zlib)
   get_target_property(ZLIB_TARGET_TYPE zlib TYPE)
   if(ZLIB_TARGET_TYPE STREQUAL "OBJECT_LIBRARY")
-    file(GLOB GITX_ZLIB_SOURCES CONFIGURE_DEPENDS
-      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libgit2-1.8.4/deps/zlib/*.c")
-    set(GITX_ZLIB_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libgit2-1.8.4/deps/zlib")
+    # Only the compression API (compress2/compressBound/uncompress) is needed
+    # by bundle.cpp; compile just those zlib sources plus their core
+    # dependencies, avoiding the gz* file helpers entirely.
+    set(GITX_ZLIB_SOURCES
+      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1/adler32.c"
+      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1/crc32.c"
+      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1/compress.c"
+      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1/deflate.c"
+      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1/infback.c"
+      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1/inffast.c"
+      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1/inflate.c"
+      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1/inftrees.c"
+      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1/trees.c"
+      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1/uncompr.c"
+      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1/zutil.c")
+    set(GITX_ZLIB_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1")
   else()
     set(GITX_ZLIB_TARGET zlib)
     get_target_property(GITX_ZLIB_INCLUDE_DIRS zlib INCLUDE_DIRECTORIES)
@@ -96,9 +111,8 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libgit2-1.8.4/include/git2.h"
   target_include_directories(gitx_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libgit2-1.8.4/include")
 endif()
 if(GITX_ZLIB_SOURCES)
-  # The bundled zlib is compiled without gzip file helpers and with the same
-  # feature macros libgit2's own zlib build uses.
-  target_compile_definitions(gitx_core PRIVATE NO_GZIP NO_VIZ STDC HAVE_SYS_TYPES_H HAVE_STDINT_H HAVE_STDDEF_H)
+  # Full upstream zlib needs no special feature macros (unlike libgit2's
+  # stripped-down copy); only the MinGW large-file macros are required.
   if(MINGW OR MSYS)
     target_compile_definitions(gitx_core PRIVATE Z_HAVE_UNISTD_H _LFS64_LARGEFILE _LARGEFILE64_SOURCE=1)
   endif()
