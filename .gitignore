@@ -1,0 +1,16 @@
+# Build directories (Windows/MinGW era + native)
+build/
+cmake-build/
+local-build/
+verified-build/
+mac-build/
+
+# Release staging
+release/
+
+# Editor / OS
+.DS_Store
+*.user
+
+# Bundle outputs
+*.bundle
