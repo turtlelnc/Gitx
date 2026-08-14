@@ -37,11 +37,12 @@ jobs:
       - name: Build
         run: cmake --build build --parallel 4
 
-      # Multi-config generators (MSVC) need an explicit configuration.
+      # Multi-config generators (MSVC) need an explicit configuration. The
+      # timeout keeps a stuck test from hanging the job for minutes.
       - name: Test (Windows)
         if: runner.os == 'Windows'
-        run: ctest --test-dir build -C Debug --output-on-failure
+        run: ctest --test-dir build -C Debug --output-on-failure --timeout 300
 
       - name: Test
         if: runner.os != 'Windows'
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --timeout 300

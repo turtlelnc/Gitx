@@ -102,13 +102,13 @@ void resolve_conflicts_interactive(git_repository* repo, git_index* index, const
     const std::string path = item != nullptr ? item->path : "(未知文件)";
     std::cout << "冲突文件: " << path << "\n选择 [o]保留当前 / [t]采用对方 / [m]手动编辑 / [q]退出: ";
     std::string choice;
-    std::getline(std::cin, choice);
+    if (!std::getline(std::cin, choice)) throw std::runtime_error("输入已结束，无法继续解决冲突；请使用原生 git 处理后继续。");
     if (choice == "q") throw std::runtime_error(abort_note);
     if (choice == "o") write_blob_to_workdir(repo, ours, workdir / path);
     else if (choice == "t") write_blob_to_workdir(repo, theirs, workdir / path);
     else if (choice == "m") {
       std::cout << "请在编辑器中完成 " << path << "，保存后按回车继续。";
-      std::getline(std::cin, choice);
+      if (!std::getline(std::cin, choice)) throw std::runtime_error("输入已结束，无法继续解决冲突；请使用原生 git 处理后继续。");
     } else {
       std::cout << "无效选择，请重试。\n";
       continue;
