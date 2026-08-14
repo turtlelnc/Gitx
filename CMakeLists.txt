@@ -105,6 +105,9 @@ add_library(gitx_core
   src/bundle.cpp
   ${GITX_ZLIB_SOURCES}
 )
+# On Windows a DLL without any __declspec(dllexport) symbols produces no import
+# library, so dependent executables cannot link against it. Export everything.
+set_target_properties(gitx_core PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 target_include_directories(gitx_core PUBLIC include)
 target_compile_definitions(gitx_core PUBLIC GITX_VERSION="${PROJECT_VERSION}")
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libgit2-1.8.4/include/git2.h")
