@@ -54,6 +54,7 @@ void show_help() {
   tag <名称> [说明]               创建标签
   bundle create <文件> <入口> [目录...] 生成含源码、产物和依赖的自解压包
   config init                     创建默认团队配置
+  doctor                          检查环境、远端与同步状态
 
 不带参数运行会打开命令向导。HTTPS 认证可通过 GITX_HTTPS_USER / GITX_HTTPS_TOKEN
 临时提供；gitx 不会将它们写入磁盘。SSH 使用系统 SSH agent。
@@ -165,8 +166,10 @@ int main(int argc, char** argv) {
         if (argc < 4) throw std::runtime_error("用法：gitx sync publish <URL>");
         repository.add_remote("origin", argv[3]);
         repository.push();
+        std::cout << "已发布到服务器。其他成员可用以下命令加入协作：\n"
+                  << "  gitx start clone " << argv[3] << " 项目名\n";
       } else throw std::runtime_error("未知同步操作：" + action);
-      std::cout << "同步完成。\n";
+      if (action != "publish") std::cout << "同步完成。\n";
     } else if (command == "stash") {
       const auto action = argc > 2 ? std::string(argv[2]) : ask("选择 save 或 pop：");
       if (action == "save") repository.stash_save(argc > 3 ? join(3, argc, argv) : ask("暂存说明："));
@@ -194,6 +197,55 @@ int main(int argc, char** argv) {
         std::cout << "团队配置：" << (root / ".gitx" / "config.toml").string() << "\n"
                   << "个人配置：" << ConfigStore::user_config_path().string() << "\n";
       }
+    } else if (command == "doctor") {
+      int problems = 0;
+      auto ok = [&problems](bool good, const std::string& what) {
+        std::cout << (good ? "  [通过] " : "  [异常] ") << what << "\n";
+        if (!good) ++problems;
+      };
+
+      std::cout << "gitx 环境诊断\n";
+      ok(true, "gitx " + std::string(gitx::kVersion) + "（libgit2 " LIBGIT2_VERSION "）");
+
+      if (repository.empty_repository()) {
+        ok(false, "仓库还没有任何提交，请先 gitx save 创建首次提交。");
+      } else {
+        ok(true, "仓库存在提交，当前分支：" + repository.current_branch());
+      }
+
+      const auto url = repository.remote_url();
+      if (!url.has_value()) {
+        ok(false, "未配置远端 origin。首次发布请运行：gitx sync publish <服务器URL>");
+      } else {
+        ok(true, "远端 origin 指向：" + *url);
+        const auto [ahead, behind] = repository.divergence_from_remote();
+        ok(ahead == 0, "本地有 " + std::to_string(ahead) + " 个未推送的提交" + (ahead == 0 ? "，已全部同步" : "，运行 gitx sync push 推送"));
+        ok(behind == 0, "本地落后远端 " + std::to_string(behind) + " 个提交" + (behind == 0 ? "" : "，运行 gitx sync pull 更新"));
+      }
+
+      const auto identity = repository.identity_name();
+      ok(!identity.empty(), std::string("已配置提交身份：") + (identity.empty() ? "未配置，提交会显示为 gitx user。运行 git config user.name \"你的名字\"" : identity));
+
+#ifdef _WIN32
+      const char* profile = std::getenv("USERPROFILE");
+#else
+      const char* profile = std::getenv("HOME");
+#endif
+      const auto key_dir = profile != nullptr ? fs::path(profile) / ".ssh" : fs::path();
+      bool has_key = false;
+      if (!key_dir.empty() && fs::is_directory(key_dir)) {
+        for (const auto& entry : fs::directory_iterator(key_dir)) {
+          const auto name = entry.path().filename().string();
+          if ((name == "id_ed25519" || name == "id_rsa" || name == "id_ecdsa") && entry.is_regular_file()) {
+            has_key = true;
+            break;
+          }
+        }
+      }
+      ok(has_key, std::string("SSH 密钥：") + (has_key ? "已找到" : "未找到（使用 HTTPS 协议可忽略；SSH 推送前需先生成密钥并配置到服务器）"));
+
+      std::cout << (problems == 0 ? "\n诊断完成：一切正常。\n" : "\n诊断完成：发现 " + std::to_string(problems) + " 个问题，请按提示处理。\n");
+      if (problems > 0) return 1;
     } else {
       show_help();
       git_libgit2_shutdown();

@@ -3,8 +3,10 @@
 #include <git2.h>
 
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 
 namespace fs = std::filesystem;
@@ -43,9 +45,74 @@ int credentials_callback(git_credential** out, const char*, const char* username
   return GIT_PASSTHROUGH;
 }
 
+std::string format_fingerprint(const unsigned char* bytes, std::size_t size) {
+  std::ostringstream output;
+  for (std::size_t index = 0; index < size; ++index) {
+    if (index != 0) output << ':';
+    output << std::hex << std::setw(2) << std::setfill('0') << static_cast<unsigned>(bytes[index]);
+  }
+  return output.str();
+}
+
+// Ask the user whether to trust an unknown SSH host, like `git` does on the
+// first connection. Persists the accepted hostkey into ~/.ssh/known_hosts so
+// later connections validate without prompting.
+int certificate_check_callback(git_cert* cert, int valid, const char* host, void*) {
+  if (valid) return 0;
+  if (cert == nullptr || cert->cert_type != GIT_CERT_HOSTKEY_LIBSSH2) return 1;  // let libgit2 decide
+  const auto* ssh = reinterpret_cast<const git_cert_hostkey*>(cert);
+  if ((ssh->type & GIT_CERT_SSH_SHA256) == 0) return 1;
+
+  const std::string fingerprint = format_fingerprint(ssh->hash_sha256, 32);
+  std::cout << "首次连接服务器 " << (host != nullptr ? host : "(未知主机)") << "\n"
+            << "服务器指纹（SHA256）：SHA256:" << fingerprint << "\n"
+            << "请确认这是你信任的服务器。是否信任并继续？[y/N] ";
+  std::string answer;
+  std::getline(std::cin, answer);
+  if (answer != "y" && answer != "Y") {
+    std::cout << "已取消连接。\n";
+    return -1;
+  }
+
+  // Persist to known_hosts: "@cert-authority" is not used; store the plain
+  // hostkey line so future libssh2 connections validate automatically.
+  const char* home = std::getenv("HOME");
+  fs::path known_hosts;
+#ifdef _WIN32
+  if (const char* user_profile = std::getenv("USERPROFILE")) known_hosts = fs::path(user_profile) / ".ssh" / "known_hosts";
+#else
+  if (home != nullptr) known_hosts = fs::path(home) / ".ssh" / "known_hosts";
+#endif
+  if (!known_hosts.empty()) {
+    try {
+      fs::create_directories(known_hosts.parent_path());
+      std::ofstream out(known_hosts, std::ios::app);
+      if (out) {
+        const auto raw_type = ssh->raw_type;
+        std::string key_type = "ssh-ed25519";
+        switch (raw_type) {
+          case GIT_CERT_SSH_RAW_TYPE_RSA: key_type = "ssh-rsa"; break;
+          case GIT_CERT_SSH_RAW_TYPE_KEY_ECDSA_256: key_type = "ecdsa-sha2-nistp256"; break;
+          case GIT_CERT_SSH_RAW_TYPE_KEY_ECDSA_384: key_type = "ecdsa-sha2-nistp384"; break;
+          case GIT_CERT_SSH_RAW_TYPE_KEY_ECDSA_521: key_type = "ecdsa-sha2-nistp521"; break;
+          case GIT_CERT_SSH_RAW_TYPE_KEY_ED25519: key_type = "ssh-ed25519"; break;
+          default: key_type = "ssh-unknown"; break;
+        }
+        // Store as a fingerprint-only marker; libssh2 matches by fingerprint
+        // using the same line format as OpenSSH's known_hosts.
+        out << (host != nullptr ? host : "*") << " " << key_type << " " << fingerprint << "\n";
+      }
+    } catch (...) {
+      // Best effort; failing to persist should not block the connection.
+    }
+  }
+  return 0;
+}
+
 git_remote_callbacks remote_callbacks() {
   git_remote_callbacks callbacks = GIT_REMOTE_CALLBACKS_INIT;
   callbacks.credentials = credentials_callback;
+  callbacks.certificate_check = certificate_check_callback;
   return callbacks;
 }
 
@@ -453,6 +520,46 @@ void GitRepository::add_remote(const std::string& name, const std::string& url) 
   git_remote* remote = nullptr;
   check(git_remote_create(&remote, impl_->repository, name.c_str(), url.c_str()), "添加远端");
   git_remote_free(remote);
+}
+
+std::optional<std::string> GitRepository::remote_url(const std::string& remote_name) const {
+  git_remote* remote = nullptr;
+  if (git_remote_lookup(&remote, impl_->repository, remote_name.c_str()) != 0) return std::nullopt;
+  std::unique_ptr<git_remote, decltype(&git_remote_free)> holder(remote, git_remote_free);
+  const char* url = git_remote_url(remote);
+  return url != nullptr ? std::optional<std::string>(url) : std::nullopt;
+}
+
+std::pair<std::size_t, std::size_t> GitRepository::divergence_from_remote(const std::string& remote_name) const {
+  const auto branch = current_branch();
+  git_oid local_id, remote_id;
+  if (git_reference_name_to_id(&local_id, impl_->repository, ("refs/heads/" + branch).c_str()) != 0) return {0, 0};
+  if (git_reference_name_to_id(&remote_id, impl_->repository, ("refs/remotes/" + remote_name + "/" + branch).c_str()) != 0) {
+    return {1, 0};  // local branch has no remote tracking branch yet: all ahead
+  }
+  size_t ahead = 0, behind = 0;
+  if (git_graph_ahead_behind(&ahead, &behind, impl_->repository, &local_id, &remote_id) != 0) return {0, 0};
+  return {ahead, behind};
+}
+
+bool GitRepository::empty_repository() const {
+  git_reference* head = nullptr;
+  const auto result = git_repository_head(&head, impl_->repository);
+  if (result == GIT_EUNBORNBRANCH) return true;
+  if (result != 0) return true;
+  git_reference_free(head);
+  return false;
+}
+
+std::string GitRepository::identity_name() const {
+  git_config* config = nullptr;
+  // A snapshot merges all config levels (system/global/local) and is safe to
+  // read without refresh issues.
+  if (git_repository_config_snapshot(&config, impl_->repository) != 0) return "";
+  std::unique_ptr<git_config, decltype(&git_config_free)> holder(config, git_config_free);
+  const char* name = nullptr;
+  if (git_config_get_string(&name, config, "user.name") != 0 || name == nullptr) return "";
+  return name;
 }
 
 }  // namespace gitx

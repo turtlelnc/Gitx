@@ -47,6 +47,14 @@ class GitRepository {
   void pull(const std::string& remote_name = "origin");
   void push(const std::string& remote_name = "origin");
   void add_remote(const std::string& name, const std::string& url);
+  std::optional<std::string> remote_url(const std::string& remote_name = "origin") const;
+  // Counts how far the local branch is ahead of / behind its remote
+  // tracking branch. Returns {ahead, behind}.
+  std::pair<std::size_t, std::size_t> divergence_from_remote(const std::string& remote_name = "origin") const;
+  // True when the repository has no commits yet.
+  bool empty_repository() const;
+  // The configured identity name ("" when unset), honoring all config levels.
+  std::string identity_name() const;
 
  private:
   struct Impl;
