@@ -12,6 +12,13 @@ import sys
 import tempfile
 import time
 
+# Windows consoles default to GBK; force UTF-8 so Chinese output from gitx
+# (and our own prints) round-trips correctly.
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 GITX = sys.argv[1] if len(sys.argv) > 1 else "gitx"
 PORT = 18990
 MOCK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mock_llm.py")
@@ -34,6 +41,8 @@ def run(args, cwd=None, env=None, input_text=None):
         env=merged,
         input=input_text,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         timeout=60,
     )
