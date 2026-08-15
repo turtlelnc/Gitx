@@ -100,6 +100,12 @@ void load_toml(const fs::path& path, TeamConfig& config, std::map<std::string, s
     } else if (section == "merge") {
       if (key == "protected_targets") config.merge.protected_targets = parse_array(value);
       if (key == "require_clean_worktree") config.merge.require_clean_worktree = parse_bool(value, config.merge.require_clean_worktree);
+    } else if (section == "ai") {
+      if (key == "provider") config.ai.provider = unquote(value);
+      if (key == "base_url") config.ai.base_url = unquote(value);
+      if (key == "model") config.ai.model = unquote(value);
+      if (key == "timeout") { try { config.ai.timeout_seconds = std::stoi(value); } catch (const std::exception&) {} }
+      if (key == "max_diff_chars") { try { config.ai.max_diff_chars = static_cast<std::size_t>(std::stoull(value)); } catch (const std::exception&) {} }
     } else if (section == "aliases" && aliases != nullptr) {
       (*aliases)[unquote(value)] = key;
     }
@@ -151,6 +157,14 @@ allowed_prefixes = ["feature/", "fix/", "docs/", "chore/"]
 [merge]
 protected_targets = ["main"]
 require_clean_worktree = true
+
+[ai]
+# AI 工具链（save --ai / explain / review --ai）
+# provider: deepseek | openai | ollama | custom
+provider = "deepseek"
+# base_url / model 留空时按 provider 使用默认值（deepseek-chat 等）
+# base_url = ""
+# model = ""
 
 [aliases]
 # "保存" = "save"

@@ -98,11 +98,20 @@ else()
   set(GITX_LIBGIT2_TARGET libgit2)
 endif()
 
+# Optional AI toolchain: requires libcurl (macOS/Linux system, Windows via
+# vcpkg). When absent the AI commands print an install hint instead.
+find_package(CURL QUIET)
+set(GITX_HAVE_CURL OFF)
+if(CURL_FOUND)
+  set(GITX_HAVE_CURL ON)
+endif()
+
 add_library(gitx_core
   src/config.cpp
   src/command_names.cpp
   src/git_repository.cpp
   src/bundle.cpp
+  src/ai_client.cpp
   ${GITX_ZLIB_SOURCES}
 )
 # On Windows a DLL without any __declspec(dllexport) symbols produces no import
@@ -110,6 +119,10 @@ add_library(gitx_core
 set_target_properties(gitx_core PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 target_include_directories(gitx_core PUBLIC include)
 target_compile_definitions(gitx_core PUBLIC GITX_VERSION="${PROJECT_VERSION}")
+if(GITX_HAVE_CURL)
+  target_compile_definitions(gitx_core PUBLIC GITX_HAVE_CURL=1)
+  target_link_libraries(gitx_core PUBLIC CURL::libcurl)
+endif()
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libgit2-1.8.4/include/git2.h")
   target_include_directories(gitx_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libgit2-1.8.4/include")
 endif()

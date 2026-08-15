@@ -2,6 +2,7 @@
 #include "gitx/bundle.hpp"
 #include "gitx/config.hpp"
 #include "gitx/git_repository.hpp"
+#include "gitx/ai_client.hpp"
 #include "gitx/version.hpp"
 
 #include <git2.h>
@@ -44,7 +45,10 @@ void show_help() {
   open                            显示当前仓库信息
   status                          显示工作区改动
   save [提交信息]                 暂存全部改动并按团队规则提交
+  save --ai                       用 AI 生成符合规范的提交信息
   history [数量]                  查看提交历史
+  explain <提交号>                用 AI 解读一条提交
+  review --ai                     用 AI 审查工作区改动
   branch [new|switch] [名称]      查看、创建或切换分支
   integrate merge <分支>          合并分支；冲突时逐块选择解决方式
   integrate rebase <分支>         把当前分支变基到目标分支之上
@@ -74,6 +78,28 @@ std::string choose_command() {
   if (choice == "7") return "stash";
   if (choice == "8") return "tag";
   return "help";
+}
+
+// Build an AI client, prompting for and storing the API key on first use.
+gitx::AiClient make_ai_client(const gitx::TeamConfig& team) {
+  const auto config = gitx::resolve_ai_config(team);
+  auto key = gitx::AiClient::load_key();
+  if (!key.has_value()) {
+    std::cout << "首次使用 AI 功能，请输入 API 密钥（输入后将安全保存到系统钥匙串）：\n";
+    const auto input = ask("API Key: ");
+    if (input.empty()) throw std::runtime_error("未提供 API 密钥，已取消。");
+    gitx::AiClient::store_key(input);
+    key = input;
+  }
+  return gitx::AiClient(config, *key);
+}
+
+void print_ai_unavailable() {
+  std::cout << "AI 功能未启用：当前构建缺少 libcurl。\n"
+            << "  安装 libcurl 开发包后重新构建：\n"
+            << "    macOS: 系统自带\n"
+            << "    Linux: sudo apt install libcurl4-openssl-dev\n"
+            << "    Windows: vcpkg install curl\n";
 }
 
 }  // namespace
@@ -127,10 +153,60 @@ int main(int argc, char** argv) {
       if (items.empty()) std::cout << "工作区干净。\n";
       for (const auto& item : items) std::cout << "[" << item.state << "] " << item.path << "\n";
     } else if (command == "save") {
-      const auto message = argc > 2 ? join(2, argc, argv) : ask("提交信息（" + team_config.commit.template_text + "）：");
+      if (argc > 2 && std::string(argv[2]) == "--ai") {
+        if (!gitx::AiClient::available()) { print_ai_unavailable(); return 1; }
+        repository.stage_all();
+        const auto diff = repository.staged_diff(team_config.ai.max_diff_chars);
+        if (diff.empty()) throw std::runtime_error("没有可提交的改动。");
+        auto client = make_ai_client(team_config);
+        const std::string system_prompt =
+            "你是一个严格的 Git 提交信息生成助手。团队规范要求提交信息必须符合以下正则：\n"
+            + team_config.commit.pattern + "\n模板：" + team_config.commit.template_text
+            + "\n只输出一行提交信息，不要任何解释、引号或多余文字。";
+        const std::string user_prompt = "以下是本次改动的 diff：\n\n" + diff;
+        std::cout << "AI 正在分析改动并生成提交信息...\n";
+        const auto message = client.complete({{"system", system_prompt}, {"user", user_prompt}});
+        std::cout << "建议提交信息：\n  " << message << "\n";
+        if (const auto issue = ConfigStore::validate_commit(team_config, message)) {
+          std::cout << "AI 生成的提交信息不符合团队规则，已拒绝（" << *issue << "）。请重试或手动提交。\n";
+          return 1;
+        }
+        const auto confirm = ask("确认提交？[y/N] ");
+        if (confirm != "y" && confirm != "Y") {
+          std::cout << "已取消。\n";
+          return 0;
+        }
+        repository.stage_all();
+        repository.commit(message, team_config);
+        std::cout << "已创建提交。\n";
+      } else {
+        const auto message = argc > 2 ? join(2, argc, argv) : ask("提交信息（" + team_config.commit.template_text + "）：");
+        repository.stage_all();
+        repository.commit(message, team_config);
+        std::cout << "已创建提交。\n";
+      }
+    } else if (command == "explain") {
+      if (!gitx::AiClient::available()) { print_ai_unavailable(); return 1; }
+      if (argc < 3) throw std::runtime_error("用法：gitx explain <提交号>");
+      auto client = make_ai_client(team_config);
+      const auto diff = repository.commit_diff(argv[2], team_config.ai.max_diff_chars);
+      const std::string system_prompt =
+          "你是 Git 历史解读助手。用简洁的中文解释一条提交：改了什么、为什么、影响范围、潜在风险。";
+      std::cout << "AI 正在解读提交 " << argv[2] << " ...\n";
+      const auto explanation = client.complete({{"system", system_prompt}, {"user", "提交的 diff：\n\n" + diff}});
+      std::cout << explanation << "\n";
+    } else if (command == "review") {
+      if (!gitx::AiClient::available()) { print_ai_unavailable(); return 1; }
+      auto client = make_ai_client(team_config);
       repository.stage_all();
-      repository.commit(message, team_config);
-      std::cout << "已创建提交。\n";
+      const auto diff = repository.staged_diff(team_config.ai.max_diff_chars);
+      if (diff.empty()) throw std::runtime_error("没有可审查的改动。");
+      const std::string system_prompt =
+          "你是代码审查助手。审查以下 diff，用中文列出问题清单：每项标注严重程度（高/中/低）、相关文件、具体问题和修改建议。"
+          "没有问题时明确说'未发现问题'。";
+      std::cout << "AI 正在审查改动...\n";
+      const auto review = client.complete({{"system", system_prompt}, {"user", diff}});
+      std::cout << review << "\n";
     } else if (command == "history") {
       const auto limit = argc > 2 ? static_cast<std::size_t>(std::stoul(argv[2])) : 20U;
       for (const auto& item : repository.history(limit)) std::cout << item.id << " " << item.summary << " — " << item.author << "\n";

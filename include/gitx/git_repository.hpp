@@ -55,6 +55,12 @@ class GitRepository {
   bool empty_repository() const;
   // The configured identity name ("" when unset), honoring all config levels.
   std::string identity_name() const;
+  // Unified diff of staged changes (or unstaged+untracked when include_all),
+  // truncated to `max_chars`. Empty when there are no changes.
+  std::string staged_diff(std::size_t max_chars) const;
+  // Unified diff between the given commit and its first parent ("what this
+  // commit changed"), truncated to `max_chars`.
+  std::string commit_diff(const std::string& commit_id, std::size_t max_chars) const;
 
  private:
   struct Impl;

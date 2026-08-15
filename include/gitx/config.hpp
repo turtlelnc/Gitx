@@ -24,10 +24,19 @@ struct MergePolicy {
   bool require_clean_worktree = true;
 };
 
+struct AiPolicy {
+  std::string provider;      // deepseek | openai | ollama | custom
+  std::string base_url;      // optional override
+  std::string model;         // optional override
+  int timeout_seconds = 60;
+  std::size_t max_diff_chars = 8000;
+};
+
 struct TeamConfig {
   CommitPolicy commit;
   BranchPolicy branch;
   MergePolicy merge;
+  AiPolicy ai;
   std::map<std::string, std::string> aliases;
 };
 

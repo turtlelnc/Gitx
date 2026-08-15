@@ -562,4 +562,87 @@ std::string GitRepository::identity_name() const {
   return name;
 }
 
+namespace {
+
+std::string diff_to_text(git_diff* diff, std::size_t max_chars) {
+  std::string result;
+  git_diff_print(diff, GIT_DIFF_FORMAT_PATCH, [](const git_diff_delta*, const git_diff_hunk*, const git_diff_line* line, void* payload) -> int {
+    auto* output = static_cast<std::string*>(payload);
+    output->append(line->content, line->content_len);
+    return 0;
+  }, &result);
+  if (result.size() > max_chars) {
+    result.resize(max_chars);
+    result += "\n...（diff 过长已截断）";
+  }
+  return result;
+}
+
+}  // namespace
+
+std::string GitRepository::staged_diff(std::size_t max_chars) const {
+  // Diff of HEAD tree vs index: reflects everything currently staged,
+  // including newly added files after a stage_all. When HEAD is unborn
+  // (no commits yet) the diff is the whole index against an empty tree.
+  git_tree* head_tree = nullptr;
+  std::unique_ptr<git_tree, decltype(&git_tree_free)> head_tree_holder(nullptr, git_tree_free);
+  git_oid head_id;
+  if (git_reference_name_to_id(&head_id, impl_->repository, "HEAD") == 0) {
+    git_commit* head_commit = nullptr;
+    check(git_commit_lookup(&head_commit, impl_->repository, &head_id), "读取 HEAD 提交");
+    std::unique_ptr<git_commit, decltype(&git_commit_free)> head_holder(head_commit, git_commit_free);
+    check(git_commit_tree(&head_tree, head_commit), "读取 HEAD 树");
+    head_tree_holder.reset(head_tree);
+  }
+
+  git_index* index = nullptr;
+  check(git_repository_index(&index, impl_->repository), "打开暂存区");
+  std::unique_ptr<git_index, decltype(&git_index_free)> index_holder(index, git_index_free);
+
+  git_diff* diff = nullptr;
+  check(git_diff_tree_to_index(&diff, impl_->repository, head_tree, index, nullptr), "生成暂存差异");
+  std::unique_ptr<git_diff, decltype(&git_diff_free)> diff_holder(diff, git_diff_free);
+  return diff_to_text(diff, max_chars);
+}
+
+std::string GitRepository::commit_diff(const std::string& commit_id, std::size_t max_chars) const {
+  git_oid oid;
+  if (git_oid_fromstr(&oid, commit_id.c_str()) != 0) {
+    // Allow short ids via revparse (handles prefixes and "HEAD~1" specs).
+    git_object* resolved = nullptr;
+    check(git_revparse_single(&resolved, impl_->repository, commit_id.c_str()), "解析提交号");
+    std::unique_ptr<git_object, decltype(&git_object_free)> resolved_holder(resolved, git_object_free);
+    git_oid_cpy(&oid, git_object_id(resolved));
+  }
+  git_commit* commit = nullptr;
+  check(git_commit_lookup(&commit, impl_->repository, &oid), "读取提交");
+  std::unique_ptr<git_commit, decltype(&git_commit_free)> commit_holder(commit, git_commit_free);
+
+  git_commit* parent = nullptr;
+  const git_commit* parents[1] = {nullptr};
+  std::size_t parent_count = 0;
+  if (git_commit_parentcount(commit) > 0) {
+    check(git_commit_parent(&parent, commit, 0), "读取父提交");
+    parents[0] = parent;
+    parent_count = 1;
+  }
+  std::unique_ptr<git_commit, decltype(&git_commit_free)> parent_holder(parent, git_commit_free);
+
+  git_tree* commit_tree = nullptr;
+  check(git_commit_tree(&commit_tree, commit), "读取提交树");
+  std::unique_ptr<git_tree, decltype(&git_tree_free)> commit_tree_holder(commit_tree, git_tree_free);
+
+  git_diff* diff = nullptr;
+  if (parent_count == 1) {
+    git_tree* parent_tree = nullptr;
+    check(git_commit_tree(&parent_tree, parent), "读取父提交树");
+    std::unique_ptr<git_tree, decltype(&git_tree_free)> parent_tree_holder(parent_tree, git_tree_free);
+    check(git_diff_tree_to_tree(&diff, impl_->repository, parent_tree, commit_tree, nullptr), "生成提交差异");
+  } else {
+    check(git_diff_tree_to_tree(&diff, impl_->repository, nullptr, commit_tree, nullptr), "生成提交差异");
+  }
+  std::unique_ptr<git_diff, decltype(&git_diff_free)> diff_holder(diff, git_diff_free);
+  return diff_to_text(diff, max_chars);
+}
+
 }  // namespace gitx
