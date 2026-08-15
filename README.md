@@ -14,14 +14,13 @@
 
 ## 构建
 
-需要 CMake 3.24+ 与支持 C++20 的编译器。首选使用本地 `third_party/libgit2-1.8.4`（已随工作区提供）；缺失时才联网下载。
+需要 CMake 3.24+ 与支持 C++20 的编译器。所有第三方依赖（libgit2、libssh2、curl、zlib）均**已 vendor 到 `third_party/`**，克隆仓库即可离线构建，无需联网下载或安装第三方库。
 
-联网能力（SSH/HTTPS）默认开启：macOS 使用系统 SecureTransport + libssh2；Linux 需要 OpenSSL 与 libssh2 开发包；Windows 使用 WinHTTP + libssh2。不需要联网功能时可用 `-DGITX_ENABLE_SSH=OFF -DGITX_ENABLE_HTTPS=OFF` 关闭。
+联网能力（SSH/HTTPS）默认开启：macOS 使用系统 SecureTransport；Linux 需要 OpenSSL 开发包（libssh2 加密后端）；Windows 使用 WinHTTP + 系统 OpenSSH。不需要联网功能时可用 `-DGITX_ENABLE_SSH=OFF -DGITX_ENABLE_HTTPS=OFF` 关闭。
 
 ### macOS
 
 ```bash
-brew install libssh2   # 启用 SSH 传输；HTTPS 使用系统 SecureTransport
 cmake -S . -B mac-build -DBUILD_TESTING=ON
 cmake --build mac-build --parallel 8
 ctest --test-dir mac-build --output-on-failure
@@ -30,7 +29,7 @@ ctest --test-dir mac-build --output-on-failure
 ### Linux
 
 ```bash
-sudo apt install libssl-dev libssh2-1-dev   # Debian/Ubuntu 示例
+sudo apt install libssl-dev   # Debian/Ubuntu 示例（libssh2 加密后端所需）
 cmake -S . -B build -DBUILD_TESTING=ON
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure

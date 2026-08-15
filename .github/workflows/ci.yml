@@ -18,18 +18,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install libgit2 dependencies (Ubuntu)
+      # All third-party dependencies are vendored in third_party/.
+      # Linux still needs OpenSSL for libssh2's crypto backend (macOS has none
+      # usable for building; Windows uses WinCNG/system OpenSSH).
+      - name: Install system crypto dependency (Ubuntu)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libssl-dev libssh2-1-dev pkg-config
-
-      - name: Install libgit2 dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: brew install libssh2
-
-      # Windows needs no extra install: HTTPS uses WinHTTP and SSH uses the
-      # OpenSSH client bundled with Windows (libgit2 exec backend).
+          sudo apt-get install -y libssl-dev pkg-config
 
       - name: Configure
         run: cmake -S . -B build -DBUILD_TESTING=ON

@@ -10,16 +10,60 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Windows ships an OpenSSH client; use libgit2's exec backend there so no
-# extra dependency is needed. Everywhere else we link against libssh2.
-if(WIN32 AND GITX_ENABLE_SSH)
-  set(GITX_SSH_BACKEND "exec")
-elseif(GITX_ENABLE_SSH)
-  set(GITX_SSH_BACKEND "ON")
-else()
-  set(GITX_SSH_BACKEND "OFF")
+# ---------------------------------------------------------------------------
+# Vendored third-party dependencies (all in third_party/, no system packages).
+# ---------------------------------------------------------------------------
+
+# libssh2: static library target `libssh2` (SSH transport for libgit2).
+# Not needed on Windows, which uses the system OpenSSH exec backend.
+if(NOT WIN32 AND GITX_ENABLE_SSH AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libssh2-1.11.1/CMakeLists.txt")
+  set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+  set(BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
+  add_subdirectory(third_party/libssh2-1.11.1 EXCLUDE_FROM_ALL)
+  # Force libgit2's FindLibSSH2 to the vendored build.
+  set(LIBSSH2_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libssh2-1.11.1/include" CACHE PATH "" FORCE)
+  set(LIBSSH2_LIBRARY "${CMAKE_BINARY_DIR}/third_party/libssh2-1.11.1/src/libssh2${CMAKE_STATIC_LIBRARY_SUFFIX}" CACHE FILEPATH "" FORCE)
+  set(GITX_VENDORED_LIBSSH2 libssh2)
 endif()
 
+# curl: static library for the AI toolchain. Disable everything we don't use.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/curl-8.7.1/CMakeLists.txt")
+  set(BUILD_CURL_EXE OFF CACHE BOOL "" FORCE)
+  set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+  set(BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
+  set(CURL_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+  set(CURL_USE_LIBPSL OFF CACHE BOOL "" FORCE)
+  set(CURL_USE_LIBSSH2 OFF CACHE BOOL "" FORCE)
+  set(CURL_USE_OPENSSL OFF CACHE BOOL "" FORCE)
+  set(CURL_USE_MBEDTLS OFF CACHE BOOL "" FORCE)
+  set(CURL_USE_WOLFSSL OFF CACHE BOOL "" FORCE)
+  set(CURL_USE_GNUTLS OFF CACHE BOOL "" FORCE)
+  set(CURL_USE_BEARSSL OFF CACHE BOOL "" FORCE)
+  if(APPLE)
+    # Use Apple's native TLS (SecureTransport) so no OpenSSL is needed.
+    set(CURL_USE_SECTRANSP ON CACHE BOOL "" FORCE)
+  endif()
+  set(CURL_DISABLE_LDAP ON CACHE BOOL "" FORCE)
+  set(CURL_DISABLE_LDAPS ON CACHE BOOL "" FORCE)
+  set(CURL_DISABLE_TELNET ON CACHE BOOL "" FORCE)
+  set(CURL_DISABLE_DICT ON CACHE BOOL "" FORCE)
+  set(CURL_DISABLE_FILE ON CACHE BOOL "" FORCE)
+  set(CURL_DISABLE_FTP ON CACHE BOOL "" FORCE)
+  set(CURL_DISABLE_GOPHER ON CACHE BOOL "" FORCE)
+  set(CURL_DISABLE_IMAP ON CACHE BOOL "" FORCE)
+  set(CURL_DISABLE_MQTT ON CACHE BOOL "" FORCE)
+  set(CURL_DISABLE_POP3 ON CACHE BOOL "" FORCE)
+  set(CURL_DISABLE_RTSP ON CACHE BOOL "" FORCE)
+  set(CURL_DISABLE_SMB ON CACHE BOOL "" FORCE)
+  set(CURL_DISABLE_SMTP ON CACHE BOOL "" FORCE)
+  set(CURL_DISABLE_TFTP ON CACHE BOOL "" FORCE)
+  set(HTTP_ONLY ON CACHE BOOL "" FORCE)
+  add_subdirectory(third_party/curl-8.7.1 EXCLUDE_FROM_ALL)
+  set(GITX_VENDORED_CURL libcurl)
+endif()
+
+# libgit2
 find_package(libgit2 CONFIG QUIET)
 
 if(NOT TARGET libgit2::libgit2 AND NOT TARGET libgit2)
@@ -98,12 +142,18 @@ else()
   set(GITX_LIBGIT2_TARGET libgit2)
 endif()
 
-# Optional AI toolchain: requires libcurl (macOS/Linux system, Windows via
-# vcpkg). When absent the AI commands print an install hint instead.
-find_package(CURL QUIET)
+# AI toolchain: requires the vendored curl (or a system curl as fallback).
+# When absent the AI commands print an install hint instead.
 set(GITX_HAVE_CURL OFF)
-if(CURL_FOUND)
+if(TARGET libcurl)
   set(GITX_HAVE_CURL ON)
+  set(GITX_CURL_TARGET libcurl)
+else()
+  find_package(CURL QUIET)
+  if(CURL_FOUND)
+    set(GITX_HAVE_CURL ON)
+    set(GITX_CURL_TARGET CURL::libcurl)
+  endif()
 endif()
 
 add_library(gitx_core
@@ -121,7 +171,12 @@ target_include_directories(gitx_core PUBLIC include)
 target_compile_definitions(gitx_core PUBLIC GITX_VERSION="${PROJECT_VERSION}")
 if(GITX_HAVE_CURL)
   target_compile_definitions(gitx_core PUBLIC GITX_HAVE_CURL=1)
-  target_link_libraries(gitx_core PUBLIC CURL::libcurl)
+  target_link_libraries(gitx_core PUBLIC ${GITX_CURL_TARGET})
+endif()
+if(GITX_VENDORED_LIBSSH2)
+  # gitx_core itself does not call libssh2, but linking it here keeps the
+  # vendored build reachable if libgit2 was configured against it.
+  target_link_libraries(gitx_core PUBLIC ${GITX_VENDORED_LIBSSH2})
 endif()
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libgit2-1.8.4/include/git2.h")
   target_include_directories(gitx_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libgit2-1.8.4/include")
