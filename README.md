@@ -90,9 +90,39 @@ gitx bundle create demo-bundle.exe bin/demo.exe dist
 
 入口路径相对于所提供的运行时目录。例如上例会把整个仓库作为 `source/`，把 `dist/` 放入 `runtime/dist/`；入口应相应写成 `dist/demo.exe`。自解压包只应在与构建时相同的操作系统与 CPU 架构上运行。
 
+## AI 工具链
+
+gitx 内置 AI 助手（需要 libcurl，macOS/Linux 系统自带；Windows 需 vcpkg 安装）：
+
+```text
+gitx save --ai          # AI 生成符合团队规范的提交信息，确认后提交
+gitx explain <提交号>    # AI 解读一条提交：改了什么、为什么、影响
+gitx review --ai        # AI 审查工作区改动，输出问题清单
+```
+
+首次使用会提示输入 API 密钥，安全存入系统钥匙串（macOS Keychain / Windows 凭据管理器 / Linux libsecret），也可用 `GITX_AI_KEY` 环境变量。模型在 `.gitx/config.toml` 的 `[ai]` 段配置：
+
+```toml
+[ai]
+provider = "deepseek"    # deepseek | openai | ollama | custom
+# base_url = ""          # 留空用默认（deepseek-chat / gpt-4o-mini / qwen2.5:7b）
+# model = ""
+```
+
+支持任意 OpenAI 兼容服务（DeepSeek、OpenAI、通义、Ollama 本地等）。详见 [docs/ai-toolchain.md](docs/ai-toolchain.md)。
+
+## 扩展脚本
+
+`gitx x` 可运行任意扩展脚本，脚本放在项目 `.gitx/scripts/`（随仓库共享）或 `~/.config/gitx/scripts/`（个人），支持 shell/python/二进制等任何可执行文件：
+
+```text
+gitx x list             # 列出可用脚本
+gitx x hello 参数...     # 运行脚本（脚本内可用 $GITX_REPO_ROOT 获取仓库路径）
+```
+
 ## 认证
 
-SSH 远端使用本机 SSH agent。HTTPS 认证可在当前进程环境中提供 `GITX_HTTPS_USER` 和 `GITX_HTTPS_TOKEN`；应用不会将凭据写入磁盘。
+SSH 远端使用本机 SSH agent；首次连接未知服务器会显示指纹并确认。HTTPS 认证可在当前进程环境中提供 `GITX_HTTPS_USER` 和 `GITX_HTTPS_TOKEN`；应用不会将凭据写入磁盘。
 
 ## 测试
 
@@ -100,7 +130,7 @@ SSH 远端使用本机 SSH agent。HTTPS 认证可在当前进程环境中提供
 ctest --test-dir mac-build --output-on-failure
 ```
 
-覆盖：配置解析与校验、仓库集成（初始化/提交/分支切换/合并冲突/变基/暂存/标签）、bundle 往返（创建/提取/启动/完整性）。
+覆盖：配置解析与校验、仓库集成（初始化/提交/分支切换/合并冲突/变基/暂存/标签）、bundle 往返（创建/提取/启动/完整性）、AI 工具链端到端（本地 mock LLM）。
 
 ## 许可
 

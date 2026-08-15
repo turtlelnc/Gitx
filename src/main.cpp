@@ -7,8 +7,10 @@
 
 #include <git2.h>
 
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
@@ -36,6 +38,23 @@ std::string join(int begin, int argc, char** argv) {
   return output.str();
 }
 
+// Cross-platform environment variable helpers.
+void setenv_or_override(const char* name, const std::string& value) {
+#ifdef _WIN32
+  _putenv_s(name, value.c_str());
+#else
+  setenv(name, value.c_str(), 1);
+#endif
+}
+
+void unsetenv_var(const char* name) {
+#ifdef _WIN32
+  _putenv_s(name, "");
+#else
+  unsetenv(name);
+#endif
+}
+
 void show_help() {
   std::cout << R"(gitx - 面向团队规范的 Git 向导
 
@@ -59,6 +78,8 @@ void show_help() {
   bundle create <文件> <入口> [目录...] 生成含源码、产物和依赖的自解压包
   config init                     创建默认团队配置
   doctor                          检查环境、远端与同步状态
+  x <脚本名> [参数...]            运行扩展脚本（.gitx/scripts/ 或 ~/.config/gitx/scripts/）
+  x list                          列出可用扩展脚本
 
 不带参数运行会打开命令向导。HTTPS 认证可通过 GITX_HTTPS_USER / GITX_HTTPS_TOKEN
 临时提供；gitx 不会将它们写入磁盘。SSH 使用系统 SSH agent。
@@ -322,6 +343,82 @@ int main(int argc, char** argv) {
 
       std::cout << (problems == 0 ? "\n诊断完成：一切正常。\n" : "\n诊断完成：发现 " + std::to_string(problems) + " 个问题，请按提示处理。\n");
       if (problems > 0) return 1;
+    } else if (command == "x") {
+      // User extension scripts: run an executable from the project's
+      // .gitx/scripts or the user's ~/.config/gitx/scripts directory.
+      const auto find_script = [&](const std::string& name) -> std::optional<fs::path> {
+        std::vector<fs::path> roots{root / ".gitx" / "scripts"};
+        if (const char* config_home = std::getenv("XDG_CONFIG_HOME")) {
+          roots.push_back(fs::path(config_home) / "gitx" / "scripts");
+        } else if (const char* home = std::getenv("HOME")) {
+          roots.push_back(fs::path(home) / ".config" / "gitx" / "scripts");
+        }
+        for (const auto& dir : roots) {
+          if (!fs::is_directory(dir)) continue;
+          // Exact name first, then basename match (hello matches hello.sh).
+          const auto exact = dir / name;
+          if (fs::is_regular_file(exact) && (fs::status(exact).permissions() & fs::perms::owner_exec) != fs::perms::none) {
+            return exact;
+          }
+          for (const auto& entry : fs::directory_iterator(dir)) {
+            if (!entry.is_regular_file()) continue;
+            const auto perms = fs::status(entry.path()).permissions();
+            if ((perms & fs::perms::owner_exec) == fs::perms::none) continue;
+            if (entry.path().stem().string() == name || entry.path().filename().string() == name) {
+              return entry.path();
+            }
+          }
+        }
+        return std::nullopt;
+      };
+
+      if (argc > 2 && std::string(argv[2]) == "list") {
+        std::vector<fs::path> roots{root / ".gitx" / "scripts"};
+        if (const char* config_home = std::getenv("XDG_CONFIG_HOME")) {
+          roots.push_back(fs::path(config_home) / "gitx" / "scripts");
+        } else if (const char* home = std::getenv("HOME")) {
+          roots.push_back(fs::path(home) / ".config" / "gitx" / "scripts");
+        }
+        std::cout << "可用扩展脚本：\n";
+        bool any = false;
+        for (const auto& dir : roots) {
+          if (!fs::is_directory(dir)) continue;
+          for (const auto& entry : fs::directory_iterator(dir)) {
+            if (!entry.is_regular_file()) continue;
+            const auto perms = fs::status(entry.path()).permissions();
+            if ((perms & fs::perms::owner_exec) == fs::perms::none) continue;
+            std::cout << "  " << entry.path().filename().string()
+                      << (dir == root / ".gitx" / "scripts" ? "  (项目)" : "  (用户)") << "\n";
+            any = true;
+          }
+        }
+        if (!any) std::cout << "  （无。把可执行脚本放入 .gitx/scripts/ 或 ~/.config/gitx/scripts/）\n";
+        return 0;
+      }
+
+      if (argc < 3) throw std::runtime_error("用法：gitx x <脚本名> [参数...]，或 gitx x list 查看可用脚本。");
+      const auto script = find_script(argv[2]);
+      if (!script.has_value()) {
+        throw std::runtime_error("找不到可执行脚本 '" + std::string(argv[2]) +
+                                 "'。请放入 .gitx/scripts/ 或 ~/.config/gitx/scripts/ 并赋予执行权限。");
+      }
+      std::ostringstream command;
+#ifdef _WIN32
+      command << "\"" << script->string() << "\"";
+#else
+      command << "'" << script->string() << "'";
+#endif
+      for (int index = 3; index < argc; ++index) {
+        command << " \"" << argv[index] << "\"";
+      }
+      // The repository root is passed as the first environment variable so
+      // scripts know where they run.
+      const std::string previous = std::getenv("GITX_REPO_ROOT") != nullptr ? std::getenv("GITX_REPO_ROOT") : "";
+      setenv_or_override("GITX_REPO_ROOT", root.string());
+      const auto exit_code = std::system(command.str().c_str());
+      if (!previous.empty()) setenv_or_override("GITX_REPO_ROOT", previous);
+      else unsetenv_var("GITX_REPO_ROOT");
+      return exit_code == 0 ? 0 : 1;
     } else {
       show_help();
       git_libgit2_shutdown();

@@ -3,12 +3,15 @@
 #include <array>
 
 namespace gitx {
+namespace {
+constexpr std::array kBuiltins{
+    "start", "open", "status", "save", "history", "explain", "review",
+    "branch", "integrate", "sync", "stash", "tag", "config", "doctor", "bundle", "x"};
+}
 
 CommandNames::CommandNames(std::map<std::string, std::string> team_aliases,
                            std::map<std::string, std::string> user_aliases) {
-  static constexpr std::array commands{
-      "start", "open", "status", "save", "history", "branch", "integrate", "sync", "stash", "tag", "config"};
-  for (const auto command : commands) lookup_.emplace(command, command);
+  for (const auto command : kBuiltins) lookup_.emplace(command, command);
   for (const auto& [alias, command] : team_aliases) lookup_[alias] = command;
   for (const auto& [alias, command] : user_aliases) lookup_[alias] = command;
 }
@@ -19,7 +22,7 @@ std::string CommandNames::canonicalize(const std::string& input) const {
 }
 
 std::vector<std::string> CommandNames::canonical_commands() const {
-  return {"start", "open", "status", "save", "history", "branch", "integrate", "sync", "stash", "tag", "config"};
+  return {kBuiltins.begin(), kBuiltins.end()};
 }
 
 }  // namespace gitx

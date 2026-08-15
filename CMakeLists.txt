@@ -163,4 +163,13 @@ if(BUILD_TESTING)
   target_compile_definitions(gitx_bundle_tests PRIVATE
     BUNDLE_LAUNCHER="$<TARGET_FILE:gitx_bundle_launcher>")
   add_test(NAME gitx.bundle COMMAND gitx_bundle_tests)
+
+  # AI toolchain end-to-end test against a local mock LLM (skips when the
+  # build has no AI support, or when python3 is unavailable).
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME gitx.ai
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/ai_smoke.py $<TARGET_FILE:gitx>)
+    set_tests_properties(gitx.ai PROPERTIES TIMEOUT 120)
+  endif()
 endif()
