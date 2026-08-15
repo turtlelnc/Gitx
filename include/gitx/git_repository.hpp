@@ -32,6 +32,9 @@ class GitRepository {
   std::filesystem::path workdir() const;
   std::vector<StatusItem> status() const;
   std::vector<HistoryItem> history(std::size_t limit = 20) const;
+  // Commits reachable from HEAD but not from the given base branch/ref
+  // ("what this branch adds on top of base"), newest first.
+  std::vector<HistoryItem> commits_since(const std::string& base_ref) const;
   std::string current_branch() const;
   std::vector<std::string> branches() const;
   void stage_all();

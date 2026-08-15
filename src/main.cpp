@@ -68,6 +68,8 @@ void show_help() {
   history [数量]                  查看提交历史
   explain <提交号>                用 AI 解读一条提交
   review --ai                     用 AI 审查工作区改动
+  changelog --ai                  用 AI 生成相对默认分支的变更日志
+  pr create --ai [目标分支]       用 AI 生成 Pull Request 标题与描述
   branch [new|switch] [名称]      查看、创建或切换分支
   integrate merge <分支>          合并分支；冲突时逐块选择解决方式
   integrate rebase <分支>         把当前分支变基到目标分支之上
@@ -228,6 +230,54 @@ int main(int argc, char** argv) {
       std::cout << "AI 正在审查改动...\n";
       const auto review = client.complete({{"system", system_prompt}, {"user", diff}});
       std::cout << review << "\n";
+    } else if (command == "changelog") {
+      if (argc > 2 && std::string(argv[2]) == "--ai") {
+        if (!gitx::AiClient::available()) { print_ai_unavailable(); return 1; }
+        auto client = make_ai_client(team_config);
+        // Commits since the default/protected branch (or the merge base).
+        std::string base = team_config.branch.default_branch;
+        std::string commits_text;
+        for (const auto& item : repository.commits_since(base)) {
+          commits_text += item.id + " " + item.summary + "\n";
+        }
+        if (commits_text.empty()) throw std::runtime_error("当前分支相对 " + base + " 没有新提交。");
+        const std::string system_prompt =
+            "你是变更日志生成助手。根据提交列表，生成符合团队规范的 CHANGELOG 片段（中文）："
+            "按类型分组（新增/修复/改进/文档/其他），每项一句话。只输出片段本身，不要 Markdown 标题和解释。";
+        std::cout << "AI 正在生成变更日志...\n";
+        const auto changelog = client.complete({{"system", system_prompt}, {"user", "相对基准分支 " + base + " 的提交：\n" + commits_text}});
+        std::cout << changelog << "\n";
+      } else {
+        throw std::runtime_error("用法：gitx changelog --ai（生成相对默认分支的变更日志）");
+      }
+    } else if (command == "pr") {
+      const auto action = argc > 2 ? std::string(argv[2]) : "";
+      if (action != "create") throw std::runtime_error("用法：gitx pr create --ai [目标分支]");
+      if (!gitx::AiClient::available()) { print_ai_unavailable(); return 1; }
+      auto client = make_ai_client(team_config);
+      const auto branch = repository.current_branch();
+      // argv: pr create [--ai] [base]; skip the optional --ai flag.
+      std::string base = team_config.branch.default_branch;
+      for (int index = 3; index < argc; ++index) {
+        if (std::string(argv[index]) == "--ai") continue;
+        base = argv[index];
+        break;
+      }
+      std::string commits_text;
+      for (const auto& item : repository.commits_since(base)) {
+        commits_text += "- " + item.summary + " (" + item.id + ")\n";
+      }
+      if (commits_text.empty()) throw std::runtime_error("当前分支相对 " + base + " 没有新提交，无需创建 PR。");
+      const std::string system_prompt =
+          "你是 Pull Request 撰写助手。基于提交列表，用中文生成：\n"
+          "1) 标题：一行，符合 type(scope): summary 格式\n"
+          "2) 描述：2-4 句话概括变更内容、动机、影响范围\n"
+          "用 Markdown，先标题再描述。";
+      std::cout << "AI 正在生成 PR 内容（分支 " << branch << " → " << base << "）...\n";
+      const auto pr_text = client.complete({{"system", system_prompt}, {"user", commits_text}});
+      std::cout << "===== 建议的 PR 内容 =====\n" << pr_text << "\n=====\n"
+                << "发布前请先推送分支：gitx sync push\n"
+                << "然后可在网页（或 gitx 后续版本）创建 Pull Request。\n";
     } else if (command == "history") {
       const auto limit = argc > 2 ? static_cast<std::size_t>(std::stoul(argv[2])) : 20U;
       for (const auto& item : repository.history(limit)) std::cout << item.id << " " << item.summary << " — " << item.author << "\n";

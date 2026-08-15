@@ -53,7 +53,7 @@ max_diff_chars = 8000
 - gitx 从钥匙串读取密钥发送请求，**不落盘、不写入配置**。
 - 环境变量 `GITX_AI_KEY` 优先于钥匙串（CI/临时场景）。
 
-## v1 三个核心命令
+## v1 核心命令
 
 ### 1. `gitx save --ai`
 
@@ -68,6 +68,14 @@ Prompt 要点：告知规范模板与 pattern，要求输出 `type(scope): summa
 ### 3. `gitx review --ai`
 
 流程：收集未推送提交（或工作区改动）的 diff → 请求 LLM 审查 → 输出问题清单（严重程度 + 行号 + 建议）。不修改任何文件，只报告。
+
+### 4. `gitx changelog --ai`
+
+流程：收集当前分支相对默认分支（`[branch].default`）的提交列表 → 请求 LLM → 输出按类型分组的中文 CHANGELOG 片段。
+
+### 5. `gitx pr create --ai [目标分支]`
+
+流程：收集当前分支相对目标分支（默认 `[branch].default`）的提交列表 → 请求 LLM → 输出 PR 标题（`type(scope): summary` 格式）与中文描述。当前只生成内容文本，实际创建 PR 待平台集成（v2）。
 
 ## 上下文收集与安全
 

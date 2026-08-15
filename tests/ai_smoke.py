@@ -105,7 +105,34 @@ def main():
                 print(f"FAIL: review --ai: {r.stderr}")
                 return 1
 
-            print("ok: AI save/explain/review end-to-end")
+            # changelog/pr need commits on a branch above the default branch.
+            r = run(["branch", "new", "feature/ai"], cwd=repo)
+            if r.returncode != 0:
+                print(f"FAIL: branch new: {r.stderr}")
+                return 1
+            with open(os.path.join(repo, "feature.js"), "w") as f:
+                f.write("function featureWork() { return 3; }\n")
+            r = run(["save", "--ai"], cwd=repo, input_text="y\n")
+            if r.returncode != 0:
+                print(f"FAIL: save --ai on feature branch: {r.stderr}")
+                return 1
+
+            # changelog --ai: relative to the default branch.
+            r = run(["changelog", "--ai"], cwd=repo)
+            if r.returncode != 0:
+                print(f"FAIL: changelog --ai: {r.stderr}")
+                return 1
+
+            # pr create --ai: with explicit base branch.
+            r = run(["pr", "create", "--ai", "main"], cwd=repo)
+            if r.returncode != 0:
+                print(f"FAIL: pr create --ai: {r.stderr}")
+                return 1
+            if "Pull Request" not in r.stdout:
+                print(f"FAIL: pr create --ai unexpected output:\n{r.stdout}")
+                return 1
+
+            print("ok: AI save/explain/review/changelog/pr end-to-end")
             return 0
         finally:
             shutil.rmtree(root, ignore_errors=True)

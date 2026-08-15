@@ -262,6 +262,42 @@ std::vector<HistoryItem> GitRepository::history(std::size_t limit) const {
   return result;
 }
 
+std::vector<HistoryItem> GitRepository::commits_since(const std::string& base_ref) const {
+  git_revwalk* walk = nullptr;
+  check(git_revwalk_new(&walk, impl_->repository), "读取历史");
+  std::unique_ptr<git_revwalk, decltype(&git_revwalk_free)> holder(walk, git_revwalk_free);
+  git_revwalk_sorting(walk, GIT_SORT_TIME | GIT_SORT_TOPOLOGICAL);
+  if (git_revwalk_push_head(walk) == GIT_ENOTFOUND) return {};
+  git_oid base_id;
+  git_object* base_object = nullptr;
+  if (git_revparse_single(&base_object, impl_->repository, base_ref.c_str()) != 0) {
+    // Base ref not found: treat everything as new.
+    std::vector<HistoryItem> result;
+    git_oid oid;
+    while (git_revwalk_next(&oid, walk) == 0) {
+      git_commit* commit = nullptr;
+      check(git_commit_lookup(&commit, impl_->repository, &oid), "读取提交");
+      std::unique_ptr<git_commit, decltype(&git_commit_free)> commit_holder(commit, git_commit_free);
+      const auto* author = git_commit_author(commit);
+      result.push_back({short_id(&oid), git_commit_summary(commit), author != nullptr ? author->name : "未知作者"});
+    }
+    return result;
+  }
+  git_oid_cpy(&base_id, git_object_id(base_object));
+  git_object_free(base_object);
+  check(git_revwalk_hide(walk, &base_id), "排除基准提交");
+  std::vector<HistoryItem> result;
+  git_oid oid;
+  while (git_revwalk_next(&oid, walk) == 0) {
+    git_commit* commit = nullptr;
+    check(git_commit_lookup(&commit, impl_->repository, &oid), "读取提交");
+    std::unique_ptr<git_commit, decltype(&git_commit_free)> commit_holder(commit, git_commit_free);
+    const auto* author = git_commit_author(commit);
+    result.push_back({short_id(&oid), git_commit_summary(commit), author != nullptr ? author->name : "未知作者"});
+  }
+  return result;
+}
+
 std::string GitRepository::current_branch() const {
   git_reference* head = nullptr;
   const auto result = git_repository_head(&head, impl_->repository);

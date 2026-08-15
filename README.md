@@ -97,6 +97,8 @@ gitx 内置 AI 助手（需要 libcurl，macOS/Linux 系统自带；Windows 需 
 gitx save --ai          # AI 生成符合团队规范的提交信息，确认后提交
 gitx explain <提交号>    # AI 解读一条提交：改了什么、为什么、影响
 gitx review --ai        # AI 审查工作区改动，输出问题清单
+gitx changelog --ai     # AI 生成相对默认分支的变更日志
+gitx pr create --ai     # AI 生成 Pull Request 标题与描述
 ```
 
 首次使用会提示输入 API 密钥，安全存入系统钥匙串（macOS Keychain / Windows 凭据管理器 / Linux libsecret），也可用 `GITX_AI_KEY` 环境变量。模型在 `.gitx/config.toml` 的 `[ai]` 段配置：

@@ -5,7 +5,7 @@
 namespace gitx {
 namespace {
 constexpr std::array kBuiltins{
-    "start", "open", "status", "save", "history", "explain", "review",
+    "start", "open", "status", "save", "history", "explain", "review", "changelog", "pr",
     "branch", "integrate", "sync", "stash", "tag", "config", "doctor", "bundle", "x"};
 }
 
