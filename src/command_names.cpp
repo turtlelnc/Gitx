@@ -6,7 +6,7 @@ namespace gitx {
 namespace {
 constexpr std::array kBuiltins{
     "start", "open", "status", "save", "history", "explain", "review", "changelog", "pr",
-    "branch", "integrate", "sync", "stash", "tag", "config", "doctor", "bundle", "x"};
+    "branch", "integrate", "sync", "stash", "tag", "config", "doctor", "bundle", "edit", "tui", "x"};
 }
 
 CommandNames::CommandNames(std::map<std::string, std::string> team_aliases,

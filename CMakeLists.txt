@@ -162,6 +162,9 @@ add_library(gitx_core
   src/git_repository.cpp
   src/bundle.cpp
   src/ai_client.cpp
+  src/terminal.cpp
+  src/editor.cpp
+  src/tui.cpp
   ${GITX_ZLIB_SOURCES}
 )
 # On Windows a DLL without any __declspec(dllexport) symbols produces no import

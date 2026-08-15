@@ -3,6 +3,8 @@
 #include "gitx/config.hpp"
 #include "gitx/git_repository.hpp"
 #include "gitx/ai_client.hpp"
+#include "gitx/editor.hpp"
+#include "gitx/tui.hpp"
 #include "gitx/version.hpp"
 
 #include <git2.h>
@@ -80,6 +82,8 @@ void show_help() {
   bundle create <文件> <入口> [目录...] 生成含源码、产物和依赖的自解压包
   config init                     创建默认团队配置
   doctor                          检查环境、远端与同步状态
+  edit <文件>                     打开内置文本编辑器
+  tui                             打开全屏交互界面（状态/暂存/提交）
   x <脚本名> [参数...]            运行扩展脚本（.gitx/scripts/ 或 ~/.config/gitx/scripts/）
   x list                          列出可用扩展脚本
 
@@ -393,6 +397,12 @@ int main(int argc, char** argv) {
 
       std::cout << (problems == 0 ? "\n诊断完成：一切正常。\n" : "\n诊断完成：发现 " + std::to_string(problems) + " 个问题，请按提示处理。\n");
       if (problems > 0) return 1;
+    } else if (command == "edit") {
+      if (argc < 3) throw std::runtime_error("用法：gitx edit <文件路径>（打开内置文本编辑器）");
+      const auto target = fs::path(argv[2]).is_absolute() ? fs::path(argv[2]) : root / argv[2];
+      gitx::editor::edit_file(target);
+    } else if (command == "tui") {
+      gitx::tui::run(repository, team_config);
     } else if (command == "x") {
       // User extension scripts: run an executable from the project's
       // .gitx/scripts or the user's ~/.config/gitx/scripts directory.

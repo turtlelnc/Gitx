@@ -1,4 +1,5 @@
 #include "gitx/git_repository.hpp"
+#include "gitx/editor.hpp"
 
 #include <git2.h>
 
@@ -174,8 +175,14 @@ void resolve_conflicts_interactive(git_repository* repo, git_index* index, const
     if (choice == "o") write_blob_to_workdir(repo, ours, workdir / path);
     else if (choice == "t") write_blob_to_workdir(repo, theirs, workdir / path);
     else if (choice == "m") {
-      std::cout << "请在编辑器中完成 " << path << "，保存后按回车继续。";
-      if (!std::getline(std::cin, choice)) throw std::runtime_error("输入已结束，无法继续解决冲突；请使用原生 git 处理后继续。");
+      // Open the built-in editor on the conflicted file; when the user saves
+      // and quits we stage the resolved content.
+      std::cout << "正在打开内置编辑器编辑 " << path << "（保存后自动继续）...\n";
+      const auto saved = editor::edit_file(workdir / path);
+      if (!saved) {
+        std::cout << "未保存修改，保留原冲突内容。\n";
+        continue;
+      }
     } else {
       std::cout << "无效选择，请重试。\n";
       continue;
