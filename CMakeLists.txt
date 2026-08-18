@@ -101,49 +101,6 @@ if(NOT TARGET libgit2::libgit2 AND NOT TARGET libgit2)
   endif()
 endif()
 
-# zlib resolution: prefer a real zlib target (system ZLIB::ZLIB, or the zlib
-# target libgit2 exposes). When libgit2 fell back to its bundled zlib that
-# target is an OBJECT library and — more importantly — a stripped-down build
-# without compress.c, so it cannot satisfy bundle.cpp's compress2/uncompress.
-# In that case we compile the full zlib sources from third_party into
-# gitx_core instead.
-set(GITX_ZLIB_TARGET "")
-set(GITX_ZLIB_SOURCES "")
-if(TARGET zlib)
-  get_target_property(ZLIB_TARGET_TYPE zlib TYPE)
-  if(ZLIB_TARGET_TYPE STREQUAL "OBJECT_LIBRARY")
-    # Only the compression API (compress2/compressBound/uncompress) is needed
-    # by bundle.cpp; compile just those zlib sources plus their core
-    # dependencies, avoiding the gz* file helpers entirely.
-    set(GITX_ZLIB_SOURCES
-      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1/adler32.c"
-      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1/crc32.c"
-      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1/compress.c"
-      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1/deflate.c"
-      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1/infback.c"
-      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1/inffast.c"
-      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1/inflate.c"
-      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1/inftrees.c"
-      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1/trees.c"
-      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1/uncompr.c"
-      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1/zutil.c")
-    set(GITX_ZLIB_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib-1.3.1")
-  else()
-    set(GITX_ZLIB_TARGET zlib)
-    get_target_property(GITX_ZLIB_INCLUDE_DIRS zlib INCLUDE_DIRECTORIES)
-  endif()
-else()
-  find_package(ZLIB QUIET)
-  if(NOT ZLIB_FOUND)
-    include(FetchContent)
-    FetchContent_Declare(zlib URL https://github.com/madler/zlib/archive/refs/tags/v1.3.1.zip)
-    FetchContent_MakeAvailable(zlib)
-    set(GITX_ZLIB_TARGET zlibstatic)
-  else()
-    set(GITX_ZLIB_TARGET ZLIB::ZLIB)
-  endif()
-endif()
-
 if(TARGET libgit2::libgit2)
   set(GITX_LIBGIT2_TARGET libgit2::libgit2)
 elseif(TARGET libgit2package)
@@ -170,12 +127,7 @@ add_library(gitx_core
   src/config.cpp
   src/command_names.cpp
   src/git_repository.cpp
-  src/bundle.cpp
   src/ai_client.cpp
-  src/terminal.cpp
-  src/editor.cpp
-  src/tui.cpp
-  ${GITX_ZLIB_SOURCES}
 )
 # On Windows a DLL without any __declspec(dllexport) symbols produces no import
 # library, so dependent executables cannot link against it. Export everything.
@@ -194,21 +146,7 @@ endif()
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libgit2-1.8.4/include/git2.h")
   target_include_directories(gitx_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libgit2-1.8.4/include")
 endif()
-if(GITX_ZLIB_SOURCES)
-  # Full upstream zlib needs no special feature macros (unlike libgit2's
-  # stripped-down copy); only the MinGW large-file macros are required.
-  if(MINGW OR MSYS)
-    target_compile_definitions(gitx_core PRIVATE Z_HAVE_UNISTD_H _LFS64_LARGEFILE _LARGEFILE64_SOURCE=1)
-  endif()
-endif()
-if(GITX_ZLIB_INCLUDE_DIRS)
-  target_include_directories(gitx_core PRIVATE ${GITX_ZLIB_INCLUDE_DIRS})
-endif()
-if(GITX_ZLIB_TARGET)
-  target_link_libraries(gitx_core PUBLIC ${GITX_LIBGIT2_TARGET} ${GITX_ZLIB_TARGET})
-else()
-  target_link_libraries(gitx_core PUBLIC ${GITX_LIBGIT2_TARGET})
-endif()
+target_link_libraries(gitx_core PUBLIC ${GITX_LIBGIT2_TARGET})
 if(WIN32)
   target_link_libraries(gitx_core PRIVATE Advapi32)
 endif()
@@ -222,18 +160,9 @@ if(BUILD_TESTING)
   target_link_libraries(gitx_tests PRIVATE gitx_core)
   add_test(NAME gitx.config COMMAND gitx_tests)
 
-  add_executable(gitx_bundle_launcher tests/bundle_launcher.cpp)
-  target_link_libraries(gitx_bundle_launcher PRIVATE gitx_core)
-
   add_executable(gitx_repo_tests tests/git_repository_tests.cpp)
   target_link_libraries(gitx_repo_tests PRIVATE gitx_core)
   add_test(NAME gitx.repository COMMAND gitx_repo_tests)
-
-  add_executable(gitx_bundle_tests tests/bundle_tests.cpp)
-  target_link_libraries(gitx_bundle_tests PRIVATE gitx_core)
-  target_compile_definitions(gitx_bundle_tests PRIVATE
-    BUNDLE_LAUNCHER="$<TARGET_FILE:gitx_bundle_launcher>")
-  add_test(NAME gitx.bundle COMMAND gitx_bundle_tests)
 
   # AI toolchain end-to-end test against a local mock LLM (skips when the
   # build has no AI support, or when python3 is unavailable).

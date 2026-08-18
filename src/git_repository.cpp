@@ -1,14 +1,25 @@
 #include "gitx/git_repository.hpp"
-#include "gitx/editor.hpp"
 
 #include <git2.h>
 
+#include <algorithm>
+#include <cerrno>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <random>
 #include <sstream>
 #include <stdexcept>
+
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -25,12 +36,92 @@ void check(int code, const std::string& action) {
   if (code < 0) fail(action, code);
 }
 
+bool edit_with_system_editor(const fs::path& file) {
+  const char* editor = std::getenv("GIT_EDITOR");
+  if (editor == nullptr || *editor == '\0') editor = std::getenv("VISUAL");
+  if (editor == nullptr || *editor == '\0') editor = std::getenv("EDITOR");
+#ifdef _WIN32
+  if (editor == nullptr || *editor == '\0') editor = "notepad.exe";
+  const auto path = file.string();
+  return _spawnlp(_P_WAIT, editor, editor, path.c_str(), nullptr) == 0;
+#else
+  if (editor == nullptr || *editor == '\0') editor = "vi";
+  const pid_t child = fork();
+  if (child < 0) return false;
+  if (child == 0) {
+    execlp(editor, editor, file.c_str(), static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  int status = 0;
+  while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
+  return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+#endif
+}
+
+std::string config_value(git_repository* repo, const char* key) {
+  git_config* config = nullptr;
+  if (git_repository_config_snapshot(&config, repo) != 0) return {};
+  std::unique_ptr<git_config, decltype(&git_config_free)> holder(config, git_config_free);
+  const char* value = nullptr;
+  if (git_config_get_string(&value, config, key) != 0 || value == nullptr) return {};
+  return value;
+}
+
 git_signature* signature_for(git_repository* repo) {
+  const auto name = config_value(repo, "user.name");
+  const auto email = config_value(repo, "user.email");
+  if (name.empty() || email.empty()) {
+    throw std::runtime_error(
+        "尚未配置提交身份。运行：gitx config user set \"姓名\" \"邮箱\"；"
+        "如仅需临时本地提交，可明确运行：gitx config user temporary。");
+  }
   git_signature* signature = nullptr;
   const auto result = git_signature_default(&signature, repo);
-  if (result == GIT_ENOTFOUND) check(git_signature_now(&signature, "gitx user", "gitx@localhost"), "创建默认提交身份");
-  else check(result, "读取 Git 用户身份");
+  check(result, "读取 Git 用户身份");
   return signature;
+}
+
+std::string safe_device_label() {
+#ifdef __APPLE__
+  std::string system = "mac";
+#elif defined(_WIN32)
+  std::string system = "windows";
+#elif defined(__linux__)
+  std::string system = "linux";
+#else
+  std::string system = "device";
+#endif
+#if defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
+  return system + "-arm64";
+#elif defined(__x86_64__) || defined(_M_X64)
+  return system + "-x64";
+#else
+  return system;
+#endif
+}
+
+std::string device_suffix() {
+  static constexpr char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  std::random_device random;
+  std::string suffix;
+  suffix.reserve(6);
+  for (int index = 0; index < 6; ++index) suffix.push_back(alphabet[random() % (sizeof(alphabet) - 1)]);
+  return suffix;
+}
+
+void set_config_value(git_repository* repo, const char* key, const std::string& value) {
+  git_config* config = nullptr;
+  check(git_repository_config(&config, repo), "打开仓库配置");
+  std::unique_ptr<git_config, decltype(&git_config_free)> holder(config, git_config_free);
+  check(git_config_set_string(config, key, value.c_str()), "写入仓库配置");
+}
+
+void delete_config_value(git_repository* repo, const char* key) {
+  git_config* config = nullptr;
+  check(git_repository_config(&config, repo), "打开仓库配置");
+  std::unique_ptr<git_config, decltype(&git_config_free)> holder(config, git_config_free);
+  const auto result = git_config_delete_entry(config, key);
+  if (result != 0 && result != GIT_ENOTFOUND) check(result, "清理仓库配置");
 }
 
 int credentials_callback(git_credential** out, const char*, const char* username, unsigned int allowed, void*) {
@@ -139,12 +230,10 @@ void resolve_conflicts_interactive(git_repository* repo, git_index* index, const
     if (choice == "o") write_blob_to_workdir(repo, ours, workdir / path);
     else if (choice == "t") write_blob_to_workdir(repo, theirs, workdir / path);
     else if (choice == "m") {
-      // Open the built-in editor on the conflicted file; when the user saves
-      // and quits we stage the resolved content.
-      std::cout << "正在打开内置编辑器编辑 " << path << "（保存后自动继续）...\n";
-      const auto saved = editor::edit_file(workdir / path);
+      std::cout << "正在用系统编辑器编辑 " << path << "（保存退出后自动继续）...\n";
+      const auto saved = edit_with_system_editor(workdir / path);
       if (!saved) {
-        std::cout << "未保存修改，保留原冲突内容。\n";
+        std::cout << "编辑器未能正常完成，保留原冲突内容。可设置 GIT_EDITOR、VISUAL 或 EDITOR 后重试。\n";
         continue;
       }
     } else {
@@ -188,7 +277,69 @@ void GitRepository::clone(const std::string& url, const fs::path& path) {
   options.fetch_opts.callbacks = remote_callbacks();
   git_repository* repository = nullptr;
   check(git_clone(&repository, url.c_str(), path.string().c_str(), &options), "克隆仓库");
-  git_repository_free(repository);
+  std::unique_ptr<git_repository, decltype(&git_repository_free)> holder(repository, git_repository_free);
+
+  // A bare server can have an invalid HEAD (for example it still points at
+  // master while its only branch is main). libgit2 then leaves the clone on an
+  // unborn branch. Never let a later save create an unrelated root history.
+  git_reference* head = nullptr;
+  const auto head_result = git_repository_head(&head, repository);
+  if (head_result == 0) {
+    git_reference_free(head);
+    return;
+  }
+  if (head_result != GIT_EUNBORNBRANCH) check(head_result, "读取克隆后的默认分支");
+
+  git_reference_iterator* iterator = nullptr;
+  check(git_reference_iterator_glob_new(&iterator, repository, "refs/remotes/origin/*"), "读取远端分支");
+  std::unique_ptr<git_reference_iterator, decltype(&git_reference_iterator_free)> iterator_holder(iterator, git_reference_iterator_free);
+  std::vector<std::string> branches;
+  git_reference* reference = nullptr;
+  while (git_reference_next(&reference, iterator) == 0) {
+    const char* name = git_reference_name(reference);
+    const std::string prefix = "refs/remotes/origin/";
+    if (name != nullptr && std::string(name).starts_with(prefix) && std::string(name) != "refs/remotes/origin/HEAD") {
+      branches.push_back(std::string(name).substr(prefix.size()));
+    }
+    git_reference_free(reference);
+  }
+  if (branches.empty()) {
+    throw std::runtime_error("远端仓库没有可检出的默认分支；请先在服务器创建并推送初始提交。");
+  }
+
+  std::string branch;
+  if (std::find(branches.begin(), branches.end(), "main") != branches.end()) branch = "main";
+  else if (branches.size() == 1) branch = branches.front();
+  else {
+    std::ostringstream message;
+    message << "远端默认分支无效，且存在多个分支：";
+    for (const auto& item : branches) message << " " << item;
+    message << "。请修复服务器 HEAD 后再克隆。";
+    throw std::runtime_error(message.str());
+  }
+
+  const auto remote_ref = "refs/remotes/origin/" + branch;
+  check(git_reference_lookup(&reference, repository, remote_ref.c_str()), "读取远端默认分支");
+  std::unique_ptr<git_reference, decltype(&git_reference_free)> remote_holder(reference, git_reference_free);
+  const auto local_ref = "refs/heads/" + branch;
+  git_reference* local = nullptr;
+  check(git_reference_create(&local, repository, local_ref.c_str(), git_reference_target(reference), 0,
+                             "gitx recover invalid remote HEAD"), "创建本地默认分支");
+  git_reference_free(local);
+  check(git_repository_set_head(repository, local_ref.c_str()), "设置本地默认分支");
+  git_checkout_options checkout = GIT_CHECKOUT_OPTIONS_INIT;
+  checkout.checkout_strategy = GIT_CHECKOUT_SAFE;
+  check(git_checkout_head(repository, &checkout), "检出远端默认分支");
+  set_config_value(repository, ("branch." + branch + ".remote").c_str(), "origin");
+  set_config_value(repository, ("branch." + branch + ".merge").c_str(), "refs/heads/" + branch);
+}
+
+bool GitRepository::ssh_agent_has_identity() {
+  git_credential* credential = nullptr;
+  const auto result = git_credential_ssh_key_from_agent(&credential, "git");
+  if (result != 0 || credential == nullptr) return false;
+  git_credential_free(credential);
+  return true;
 }
 
 fs::path GitRepository::workdir() const {
@@ -205,12 +356,36 @@ std::vector<StatusItem> GitRepository::status() const {
   check(git_status_list_new(&list, impl_->repository, &options), "读取工作区状态");
   std::unique_ptr<git_status_list, decltype(&git_status_list_free)> holder(list, git_status_list_free);
   std::vector<StatusItem> result;
+  const auto describe = [](unsigned int status, bool index) {
+    if (index) {
+      if (status & GIT_STATUS_INDEX_NEW) return std::string("新增");
+      if (status & GIT_STATUS_INDEX_MODIFIED) return std::string("修改");
+      if (status & GIT_STATUS_INDEX_DELETED) return std::string("删除");
+      if (status & GIT_STATUS_INDEX_RENAMED) return std::string("重命名");
+      if (status & GIT_STATUS_INDEX_TYPECHANGE) return std::string("类型变更");
+    } else {
+      if (status & GIT_STATUS_WT_NEW) return std::string("未跟踪");
+      if (status & GIT_STATUS_WT_MODIFIED) return std::string("修改");
+      if (status & GIT_STATUS_WT_DELETED) return std::string("删除");
+      if (status & GIT_STATUS_WT_RENAMED) return std::string("重命名");
+      if (status & GIT_STATUS_WT_TYPECHANGE) return std::string("类型变更");
+    }
+    return std::string{};
+  };
   for (size_t i = 0; i < git_status_list_entrycount(list); ++i) {
     const auto* entry = git_status_byindex(list, i);
     const auto* delta = entry->index_to_workdir != nullptr ? entry->index_to_workdir : entry->head_to_index;
     const char* path = delta != nullptr ? delta->new_file.path : nullptr;
     if (path == nullptr && delta != nullptr) path = delta->old_file.path;
-    result.push_back({path != nullptr ? path : "(未知文件)", std::to_string(entry->status)});
+    std::string state;
+    const auto staged = describe(entry->status, true);
+    const auto unstaged = describe(entry->status, false);
+    if (!staged.empty()) state += "已暂存：" + staged;
+    if (!unstaged.empty()) {
+      if (!state.empty()) state += "；";
+      state += "未暂存：" + unstaged;
+    }
+    result.push_back({path != nullptr ? path : "(未知文件)", state.empty() ? "状态未知" : state});
   }
   return result;
 }
@@ -310,8 +485,27 @@ void GitRepository::stage_all() {
   git_index* index = nullptr;
   check(git_repository_index(&index, impl_->repository), "打开暂存区");
   std::unique_ptr<git_index, decltype(&git_index_free)> holder(index, git_index_free);
+  check(git_index_update_all(index, nullptr, nullptr, nullptr), "更新已跟踪文件的暂存状态");
   check(git_index_add_all(index, nullptr, GIT_INDEX_ADD_DEFAULT, nullptr, nullptr), "暂存全部改动");
   check(git_index_write(index), "写入暂存区");
+}
+
+void GitRepository::stage_paths(const std::vector<std::string>& paths) {
+  if (paths.empty()) throw std::runtime_error("请至少提供一个要暂存的文件路径。");
+  git_index* index = nullptr;
+  check(git_repository_index(&index, impl_->repository), "打开暂存区");
+  std::unique_ptr<git_index, decltype(&git_index_free)> holder(index, git_index_free);
+  std::vector<char*> values;
+  values.reserve(paths.size());
+  for (const auto& path : paths) values.push_back(const_cast<char*>(path.c_str()));
+  git_strarray specs{values.data(), values.size()};
+  check(git_index_update_all(index, &specs, nullptr, nullptr), "更新指定文件的暂存状态");
+  check(git_index_add_all(index, &specs, GIT_INDEX_ADD_DEFAULT, nullptr, nullptr), "暂存指定文件");
+  check(git_index_write(index), "写入暂存区");
+}
+
+bool GitRepository::has_staged_changes() const {
+  return !staged_diff(64 * 1024).empty();
 }
 
 void GitRepository::commit(const std::string& message, const TeamConfig& config) {
@@ -341,6 +535,61 @@ void GitRepository::commit(const std::string& message, const TeamConfig& config)
                           message.c_str(), tree, parent_count, parents), "创建提交");
 }
 
+void GitRepository::revert_commit(const std::string& commit_id, const TeamConfig& config) {
+  if (!status().empty()) {
+    throw std::runtime_error("工作区或暂存区存在改动。请先提交或 stash，再执行历史回退。");
+  }
+
+  git_object* object = nullptr;
+  check(git_revparse_single(&object, impl_->repository, commit_id.c_str()), "读取要回退的提交");
+  std::unique_ptr<git_object, decltype(&git_object_free)> object_holder(object, git_object_free);
+  git_commit* target = nullptr;
+  check(git_commit_lookup(&target, impl_->repository, git_object_id(object)), "读取要回退的提交");
+  std::unique_ptr<git_commit, decltype(&git_commit_free)> target_holder(target, git_commit_free);
+  if (git_commit_parentcount(target) != 1) {
+    throw std::runtime_error("暂不支持回退合并提交或根提交。请先选择一条普通提交，避免错误主线回退。");
+  }
+
+  git_reference* head = nullptr;
+  check(git_repository_head(&head, impl_->repository), "读取当前提交");
+  std::unique_ptr<git_reference, decltype(&git_reference_free)> head_holder(head, git_reference_free);
+  const auto* head_id = git_reference_target(head);
+  if (head_id == nullptr) throw std::runtime_error("当前 HEAD 不是可回退的本地分支。");
+  git_commit* current = nullptr;
+  check(git_commit_lookup(&current, impl_->repository, head_id), "读取当前提交");
+  std::unique_ptr<git_commit, decltype(&git_commit_free)> current_holder(current, git_commit_free);
+
+  // git_revert_commit calculates into an in-memory index. A conflict therefore
+  // leaves both the working directory and branch untouched.
+  git_index* inverse_index = nullptr;
+  git_merge_options merge_options = GIT_MERGE_OPTIONS_INIT;
+  check(git_revert_commit(&inverse_index, impl_->repository, target, current, 0, &merge_options), "计算回退结果");
+  std::unique_ptr<git_index, decltype(&git_index_free)> index_holder(inverse_index, git_index_free);
+  if (git_index_has_conflicts(inverse_index)) {
+    throw std::runtime_error("回退会产生冲突，已保持仓库不变。请先在新分支上处理，或使用原生 Git 指定合并策略。");
+  }
+
+  git_oid tree_id;
+  check(git_index_write_tree_to(&tree_id, inverse_index, impl_->repository), "写入回退提交树");
+  git_tree* tree = nullptr;
+  check(git_tree_lookup(&tree, impl_->repository, &tree_id), "读取回退提交树");
+  std::unique_ptr<git_tree, decltype(&git_tree_free)> tree_holder(tree, git_tree_free);
+  const auto message = "fix(revert): 回退 " + short_id(git_commit_id(target));
+  if (const auto issue = ConfigStore::validate_commit(config, message)) throw std::runtime_error(*issue);
+  std::unique_ptr<git_signature, decltype(&git_signature_free)> signature(signature_for(impl_->repository), git_signature_free);
+  const git_commit* parents[] = {current};
+  git_oid new_commit;
+  check(git_commit_create(&new_commit, impl_->repository, "HEAD", signature.get(), signature.get(), nullptr,
+                          message.c_str(), tree, 1, parents), "创建反向提交");
+
+  git_checkout_options checkout = GIT_CHECKOUT_OPTIONS_INIT;
+  // The worktree was verified clean before calculating the inverse tree. The
+  // index still describes the pre-revert commit, so SAFE may treat this
+  // intended update as a local modification; force the already-computed tree.
+  checkout.checkout_strategy = GIT_CHECKOUT_FORCE;
+  check(git_checkout_tree(impl_->repository, reinterpret_cast<git_object*>(tree), &checkout), "更新回退后的工作区");
+}
+
 void GitRepository::create_and_switch_branch(const std::string& name, const TeamConfig& config) {
   if (const auto issue = ConfigStore::validate_branch(config, name)) throw std::runtime_error(*issue);
   git_oid head_id;
@@ -365,20 +614,6 @@ void GitRepository::checkout_branch(const std::string& name) {
   options.checkout_strategy = GIT_CHECKOUT_SAFE;
   check(git_checkout_tree(impl_->repository, target, &options), "更新工作区");
   check(git_repository_set_head(impl_->repository, reference.c_str()), "切换分支");
-}
-
-void GitRepository::create_tag(const std::string& name, const std::string& message) {
-  git_oid target_id;
-  check(git_reference_name_to_id(&target_id, impl_->repository, "HEAD"), "读取当前提交");
-  git_object* target = nullptr;
-  check(git_object_lookup(&target, impl_->repository, &target_id, GIT_OBJECT_COMMIT), "读取标签目标");
-  std::unique_ptr<git_object, decltype(&git_object_free)> holder(target, git_object_free);
-  git_oid tag_id;
-  if (message.empty()) check(git_tag_create_lightweight(&tag_id, impl_->repository, name.c_str(), target, 0), "创建轻量标签");
-  else {
-    std::unique_ptr<git_signature, decltype(&git_signature_free)> signature(signature_for(impl_->repository), git_signature_free);
-    check(git_tag_create(&tag_id, impl_->repository, name.c_str(), target, signature.get(), message.c_str(), 0), "创建标签");
-  }
 }
 
 void GitRepository::stash_save(const std::string& message) {
@@ -521,12 +756,26 @@ void GitRepository::push(const std::string& remote_name) {
   char* values[] = {const_cast<char*>(spec.c_str())};
   git_strarray refspecs{values, 1};
   check(git_remote_push(remote, &refspecs, &options), "推送分支");
+  set_upstream(remote_name);
 }
 
 void GitRepository::add_remote(const std::string& name, const std::string& url) {
   git_remote* remote = nullptr;
   check(git_remote_create(&remote, impl_->repository, name.c_str(), url.c_str()), "添加远端");
   git_remote_free(remote);
+}
+
+void GitRepository::set_remote_url(const std::string& name, const std::string& url) {
+  git_remote* remote = nullptr;
+  check(git_remote_lookup(&remote, impl_->repository, name.c_str()), "读取远端");
+  std::unique_ptr<git_remote, decltype(&git_remote_free)> holder(remote, git_remote_free);
+  check(git_remote_set_url(impl_->repository, name.c_str(), url.c_str()), "修改远端地址");
+}
+
+void GitRepository::set_upstream(const std::string& remote_name) {
+  const auto branch = current_branch();
+  set_config_value(impl_->repository, ("branch." + branch + ".remote").c_str(), remote_name);
+  set_config_value(impl_->repository, ("branch." + branch + ".merge").c_str(), "refs/heads/" + branch);
 }
 
 std::optional<std::string> GitRepository::remote_url(const std::string& remote_name) const {
@@ -559,13 +808,37 @@ bool GitRepository::empty_repository() const {
 }
 
 std::string GitRepository::identity_name() const {
-  git_config* config = nullptr;
-  // A snapshot merges all config levels (system/global/local) and is safe to
-  // read without refresh issues.
-  if (git_repository_config_snapshot(&config, impl_->repository) != 0) return "";
-  std::unique_ptr<git_config, decltype(&git_config_free)> holder(config, git_config_free);
-  const char* name = nullptr;
-  if (git_config_get_string(&name, config, "user.name") != 0 || name == nullptr) return "";
+  return config_value(impl_->repository, "user.name");
+}
+
+std::string GitRepository::identity_email() const {
+  return config_value(impl_->repository, "user.email");
+}
+
+bool GitRepository::has_identity() const {
+  return !identity_name().empty() && !identity_email().empty();
+}
+
+bool GitRepository::uses_temporary_identity() const {
+  return config_value(impl_->repository, "gitx.identity.kind") == "temporary";
+}
+
+void GitRepository::set_identity(const std::string& name, const std::string& email) {
+  if (name.empty() || email.empty()) throw std::runtime_error("姓名和邮箱均不能为空。");
+  if (email.find('@') == std::string::npos) throw std::runtime_error("邮箱格式无效。请提供包含 @ 的邮箱地址。");
+  set_config_value(impl_->repository, "user.name", name);
+  set_config_value(impl_->repository, "user.email", email);
+  delete_config_value(impl_->repository, "gitx.identity.kind");
+}
+
+std::string GitRepository::set_temporary_identity() {
+  const auto label = safe_device_label();
+  const auto suffix = device_suffix();
+  const auto name = "设备-" + label + "-" + suffix;
+  const auto email = "gitx+" + label + "-" + suffix + "@local.invalid";
+  set_config_value(impl_->repository, "user.name", name);
+  set_config_value(impl_->repository, "user.email", email);
+  set_config_value(impl_->repository, "gitx.identity.kind", "temporary");
   return name;
 }
 

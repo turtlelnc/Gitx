@@ -5,16 +5,15 @@
 ## 功能
 
 - 中文交互向导（不带参数运行）与完整的命令行路由
-- 仓库操作：`start`（初始化/克隆）、`open`、`status`、`save`、`history`
-- 分支与合并：`branch new|switch`、`integrate merge`、`integrate rebase`（冲突时逐块选择 o/t/m/q）
+- 仓库操作：`start`（初始化/克隆）、`status`、`save`、`history`、`revert`
+- 分支与合并：`branch new|switch`、`integrate merge`、`integrate rebase`（冲突时逐文件选择 o/t/m/q）
 - 同步：`sync fetch|pull|push|publish`（SSH 走系统 agent，HTTPS 走环境变量）
-- 暂存与标签：`stash save|pop`、`tag`
+- 临时暂存：`stash save|pop`
 - 团队规范：`.gitx/config.toml` 定义提交格式、分支前缀、合并前工作区检查，以及中文命令别名
-- 自解压交付包：`bundle create` 将源码、产物与依赖压入单个可执行文件
 
 ## 构建
 
-需要 CMake 3.24+ 与支持 C++20 的编译器。所有第三方依赖（libgit2、libssh2、curl、zlib）均**已 vendor 到 `third_party/`**，克隆仓库即可离线构建，无需联网下载或安装第三方库。
+需要 CMake 3.24+ 与支持 C++20 的编译器。主要第三方依赖（libgit2、libssh2、curl）均**已 vendor 到 `third_party/`**，克隆仓库即可离线构建，无需联网下载这些依赖。
 
 联网能力（SSH/HTTPS）默认开启：macOS 使用系统 SecureTransport；Linux 需要 OpenSSL 开发包（libssh2 加密后端）；Windows 使用 WinHTTP + 系统 OpenSSH。不需要联网功能时可用 `-DGITX_ENABLE_SSH=OFF -DGITX_ENABLE_HTTPS=OFF` 关闭。
 
@@ -48,7 +47,9 @@ ctest --test-dir build --output-on-failure
 ```text
 gitx start demo
 cd demo
-gitx save "feat(cli): first commit"
+gitx config user set "你的名字" "you@example.com"
+gitx save --all "feat(cli): first commit"
+gitx revert <要回退的提交号>      # 创建反向提交，不改写历史
 gitx branch new feature/login
 gitx status
 ```
@@ -77,24 +78,26 @@ require_clean_worktree = true
 # "保存" = "save"
 ```
 
-提交信息与分支名不符合规则时 `gitx` 会拒绝操作；`[aliases]` 支持团队与个人（`~/.config/gitx/config.toml`）的中文命令别名。
+提交信息与分支名不符合规则时 `gitx` 会拒绝操作；首次提交前还需用 `gitx config user set <姓名> <邮箱>` 设置本仓库署名。急需本地试验时可显式运行 `gitx config user temporary` 创建形如 `设备-mac-arm64-代码` 的临时署名；它只包含系统/架构标签和短码，不包含主机名、内网地址或硬件序列号，也不会在以后自动重写已推送历史。`[aliases]` 支持团队与个人（`~/.config/gitx/config.toml`）的中文命令别名。
 
-## 自解压交付包
+`save` 默认只提交已暂存的改动：用 `gitx save --all <提交信息>` 暂存全部，或 `gitx save <文件...> -- <提交信息>` 只暂存指定文件。`save --ai` 读取已暂存内容；`save --ai --all` 会在确认后显式暂存全部工作区改动。
 
-`bundle` 会把当前仓库的源代码（不含 `.git`）、运行产物和依赖目录压缩进一个可执行的自解压包。接收者直接运行该文件，`gitx` 会校验包完整性、解压至临时目录、启动入口程序，随后自动清理临时目录。
+## 安全回退历史
 
 ```text
-gitx bundle create demo-bundle.exe bin/demo.exe dist
+gitx history
+gitx revert <提交号>
 ```
 
-入口路径相对于所提供的运行时目录。例如上例会把整个仓库作为 `source/`，把 `dist/` 放入 `runtime/dist/`；入口应相应写成 `dist/demo.exe`。自解压包只应在与构建时相同的操作系统与 CPU 架构上运行。
+`revert` 不会移动或删除已有提交，而是创建一条反向提交，因此可以安全地回退已经推送、且可能被他人拉取的普通提交。执行前工作区必须干净；合并提交、根提交以及会产生冲突的回退会被拒绝，仓库不会被修改。
 
 ## AI 工具链
 
 gitx 内置 AI 助手（默认构建会使用仓库内 vendor 的 libcurl）：
 
 ```text
-gitx save --ai          # AI 生成符合团队规范的提交信息，确认后提交
+gitx save --ai          # 对已暂存内容生成符合规范的提交信息，确认后提交
+gitx save --ai --all    # 明确允许 AI 基于全部工作区改动生成并提交
 gitx explain <提交号>    # AI 解读一条提交：改了什么、为什么、影响
 gitx review --ai        # AI 审查工作区改动，输出问题清单
 gitx changelog --ai     # AI 生成相对默认分支的变更日志
@@ -112,6 +115,8 @@ provider = "deepseek"    # deepseek | openai | ollama | custom
 
 支持任意 OpenAI 兼容服务（DeepSeek、OpenAI、通义、Ollama 本地等）。详见 [docs/ai-toolchain.md](docs/ai-toolchain.md)。
 
+完整的功能取舍与后续改进优先级见 [docs/feature-review.md](docs/feature-review.md)。
+
 ## 扩展脚本
 
 `gitx x` 可运行任意扩展脚本，脚本放在项目 `.gitx/scripts/`（随仓库共享）或 `~/.config/gitx/scripts/`（个人），支持 shell/python/二进制等任何可执行文件：
@@ -121,15 +126,7 @@ gitx x list             # 列出可用脚本
 gitx x hello 参数...     # 运行脚本（脚本内可用 $GITX_REPO_ROOT 获取仓库路径）
 ```
 
-## 交互界面与编辑器
-
-```text
-gitx tui                # 全屏交互界面：文件状态列表 + diff 预览 + 提交
-gitx edit <文件>         # 内置文本编辑器（↑↓←→ 移动、Ctrl+S 保存、Ctrl+X 退出）
-```
-
-- `tui` 中：↑↓ 选择文件，`d` 查看全部已暂存 diff，`c` 暂存全部改动后输入提交信息并提交，`e` 用内置编辑器打开选中文件，`q` 退出。
-- 合并/变基冲突的 `m`（手动编辑）选项会直接打开内置编辑器，保存后自动继续解决流程。
+合并或变基冲突选择 `m` 时，gitx 会调用 `GIT_EDITOR`、`VISUAL` 或 `EDITOR` 指定的系统编辑器；未配置时使用平台默认编辑器。
 
 ## 认证
 
@@ -141,8 +138,8 @@ SSH 远端使用本机 SSH agent，并要求主机密钥已存在于 `~/.ssh/kno
 ctest --test-dir mac-build --output-on-failure
 ```
 
-覆盖：配置解析与校验、仓库集成（初始化/提交/分支切换/合并冲突/变基/暂存/标签）、bundle 往返（创建/提取/启动/完整性）、AI 工具链端到端（本地 mock LLM）。
+覆盖：配置解析与校验、仓库集成（初始化/提交/分支切换/合并冲突/变基/暂存）、AI 工具链端到端（本地 mock LLM）。
 
 ## 许可
 
-gitx 自身代码采用 MIT 许可证，详见 [LICENSE](LICENSE)。链接或随包分发的第三方组件（libgit2、zlib、libssh2、OpenSSL）各自的许可证与版权声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+gitx 自身代码采用 MIT 许可证，详见 [LICENSE](LICENSE)。链接或随包分发的第三方组件（libgit2、libssh2、curl、OpenSSL）各自的许可证与版权声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

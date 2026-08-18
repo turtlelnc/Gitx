@@ -79,7 +79,7 @@ def main():
                 f.write("function addUser() { return 1; }\n")
 
             # save --ai: accept the generated message.
-            r = run(["save", "--ai"], cwd=repo, input_text="y\n")
+            r = run(["save", "--ai", "--all"], cwd=repo, input_text="y\n")
             if r.returncode != 0:
                 print(f"FAIL: save --ai: {r.stderr}\nstdout: {r.stdout}")
                 return 1
@@ -116,7 +116,7 @@ def main():
                 return 1
             with open(os.path.join(repo, "feature.js"), "w") as f:
                 f.write("function featureWork() { return 3; }\n")
-            r = run(["save", "--ai"], cwd=repo, input_text="y\n")
+            r = run(["save", "--ai", "--all"], cwd=repo, input_text="y\n")
             if r.returncode != 0:
                 print(f"FAIL: save --ai on feature branch: {r.stderr}")
                 return 1

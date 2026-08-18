@@ -39,6 +39,7 @@ sudo chown git:git /srv/git
 
 # 4. 创建团队仓库（bare = 无工作区，只存历史）
 sudo -u git git init --bare /srv/git/team-project.git
+sudo -u git git --git-dir=/srv/git/team-project.git symbolic-ref HEAD refs/heads/main
 
 # 5. 确认 sshd 已开启（默认开启）
 sudo systemctl enable --now ssh
@@ -57,6 +58,7 @@ xcode-select --install
 # 3. 建仓库目录（放在当前用户的某处，如 ~/git）
 mkdir -p ~/git
 git init --bare ~/git/team-project.git
+git --git-dir=~/git/team-project.git symbolic-ref HEAD refs/heads/main
 ```
 
 > macOS 上如果不想让服务器用户有完整 shell，可用系统自带用户配合 `git-shell`，
@@ -75,6 +77,7 @@ Set-Service -Name sshd -StartupType Automatic
 mkdir C:\git
 cd C:\git
 git init --bare team-project.git
+git --git-dir=C:/git/team-project.git symbolic-ref HEAD refs/heads/main
 ```
 
 > Windows 上 SSH 登录默认用的是 Windows 用户账号（如 Administrator），
@@ -89,9 +92,8 @@ gitx start clone git@服务器IP:/srv/git/team-project.git 项目名
 cd 项目名
 
 # 首次提交并发布到服务器
-git config user.name "你的名字"
-git config user.email "you@example.com"
-gitx save "feat(cli): 首次提交"
+gitx config user set "你的名字" "you@example.com"
+gitx save --all "feat(cli): 首次提交"
 gitx sync publish git@服务器IP:/srv/git/team-project.git
 
 # 日常协作
@@ -162,11 +164,11 @@ gitx start clone ssh://git@服务器IP:2222/用户名/team-project.git 项目名
 
 ## 常见问题
 
-**Q: 客户端提示 host key 确认？**
-A: 首次连接新服务器属正常现象，确认指纹后输入 yes 即可。
+**Q: Gitx 提示主机密钥未通过 known_hosts 校验？**
+A: Gitx 不显示“输入 yes”的信任提示。请先在可信网络中用系统 SSH 核对并登记主机密钥（例如 `ssh git@服务器IP`），或由管理员提供经过核验的 known_hosts 条目；然后再运行 Gitx。
 
 **Q: 服务器在路由器/NAT 后面？**
-A: 需要在路由器上把 22（或 Gitea 的 2222）端口转发到服务器内网 IP，或配置 DDNS。
+A: 不建议直接把 SSH 端口映射到公网。优先用 VPN/私有组网（如 WireGuard、Tailscale）让成员进入受认证网络后访问 SSH；公网托管需求优先采用有备份和访问控制的 Git 托管服务。
 
 **Q: 客户端走 HTTPS 时凭据怎么给？**
 A: 环境变量 `GITX_HTTPS_USER` / `GITX_HTTPS_TOKEN`（gitx 刻意不把凭据写盘）。

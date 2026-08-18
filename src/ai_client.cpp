@@ -282,6 +282,13 @@ std::string AiClient::complete(const std::vector<ChatMessage>& messages) const {
   headers = curl_slist_append(headers, ("Authorization: Bearer " + api_key_).c_str());
 
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+  // Local providers such as Ollama and the test mock must not be sent through
+  // a globally configured corporate/debug proxy. Besides failing locally, a
+  // proxy would unnecessarily expose requests intended to remain on-device.
+  if (config_.base_url.starts_with("http://127.0.0.1") || config_.base_url.starts_with("http://localhost") ||
+      config_.base_url.starts_with("https://127.0.0.1") || config_.base_url.starts_with("https://localhost")) {
+    curl_easy_setopt(curl, CURLOPT_NOPROXY, "*");
+  }
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
   curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request_body.c_str());
   curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(request_body.size()));

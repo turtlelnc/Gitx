@@ -9,7 +9,7 @@
 | gitx 概念 | 游戏类比 | 实际作用 |
 |---|---|---|
 | 仓库 | 存档文件夹 | 项目文件夹 + 隐藏的存档记录 |
-| `save`（提交） | 存档点 | 把当前所有文件的状态拍一张快照 |
+| `save`（提交） | 存档点 | 把已选择暂存的文件状态拍一张快照 |
 | `history` | 读档列表 | 查看所有存档点 |
 | `status` | 检查改动 | 看"上次存档后改了什么" |
 | `branch`（分支） | 平行世界 | 开副本放心尝试，不影响主线 |
@@ -39,13 +39,14 @@ gitx 会建好文件夹、初始化存档记录、生成团队规范文件（`.g
 
 ## 第 3 步：设置你的身份（只需一次）
 
-提交会署名，先设置一次：
+提交会署名，先为当前项目设置一次：
 
 ```bash
 cd 我的第一个项目
-git config user.name "你的名字"
-git config user.email "you@example.com"
+gitx config user set "你的名字" "you@example.com"
 ```
+
+还没决定署名、只是本地快速试验时，可主动运行 `gitx config user temporary`。它会生成可识别的临时设备署名；以后设置真实姓名只影响新提交，不会自动篡改已经分享的历史。
 
 ## 第 4 步：写文件并存档
 
@@ -53,7 +54,7 @@ git config user.email "you@example.com"
 
 ```bash
 gitx status          # 看到新文件
-gitx save "feat(笔记): 我的第一条记录"
+gitx save --all "feat(笔记): 我的第一条记录"
 ```
 
 提交信息必须符合 `类型(范围): 一句话` 格式：
@@ -73,7 +74,13 @@ gitx status          # "工作区干净" = 全部已存档
 
 ## 第 6 步：改坏不怕
 
-改动后 `gitx history` 看记录，改回去再 `gitx save` 存新档。旧版本永远在历史里。
+改动后 `gitx history` 看记录。如果某一次提交整体有问题，可安全地创建反向存档：
+
+```bash
+gitx revert <提交号>
+```
+
+它不会删除旧版本，而是创建一条“撤销该提交”的新记录，适合已经推送到服务器的内容。若只想提交部分文件，用 `gitx save 文件1 文件2 -- "feat(范围): 说明"`。旧版本永远在历史里。
 
 ## 第 7 步：开平行世界尝试
 
@@ -87,7 +94,6 @@ gitx branch                    # 查看所有世界
 
 - `integrate merge` / `integrate rebase` — 合并与变基
 - `sync` — 与远程仓库同步
-- `bundle` — 自解压交付包
 - `stash` — 临时暂存
 
 等基础操作熟练后再学。

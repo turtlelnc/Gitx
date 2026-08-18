@@ -45,6 +45,7 @@ class ConfigStore {
   static TeamConfig load_team(const std::filesystem::path& repository_root);
   static std::map<std::string, std::string> load_user_aliases();
   static bool write_default_team_config(const std::filesystem::path& repository_root);
+  static bool write_default_ignore_file(const std::filesystem::path& repository_root);
   static std::filesystem::path user_config_path();
   static std::optional<std::string> validate_commit(const TeamConfig& config, const std::string& message);
   static std::optional<std::string> validate_branch(const TeamConfig& config, const std::string& branch);
