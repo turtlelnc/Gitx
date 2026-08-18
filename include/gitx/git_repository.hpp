@@ -61,6 +61,9 @@ class GitRepository {
   // Unified diff of staged changes (or unstaged+untracked when include_all),
   // truncated to `max_chars`. Empty when there are no changes.
   std::string staged_diff(std::size_t max_chars) const;
+  // Unified diff from HEAD/index to the working directory, including untracked
+  // files.  Unlike stage_all() this is read-only and does not alter the index.
+  std::string working_diff(std::size_t max_chars) const;
   // Unified diff between the given commit and its first parent ("what this
   // commit changed"), truncated to `max_chars`.
   std::string commit_diff(const std::string& commit_id, std::size_t max_chars) const;

@@ -55,59 +55,23 @@ std::string format_fingerprint(const unsigned char* bytes, std::size_t size) {
   return output.str();
 }
 
-// Ask the user whether to trust an unknown SSH host, like `git` does on the
-// first connection. Persists the accepted hostkey into ~/.ssh/known_hosts so
-// later connections validate without prompting.
+// Accept only host keys already validated by libgit2.  A SHA-256 fingerprint
+// is not an OpenSSH known_hosts entry (that format requires the raw public
+// key), so writing it out and accepting it here would turn host-key changes
+// into a click-through prompt.  Users must add a new host key with OpenSSH
+// tooling, then retry.
 int certificate_check_callback(git_cert* cert, int valid, const char* host, void*) {
   if (valid) return 0;
-  if (cert == nullptr || cert->cert_type != GIT_CERT_HOSTKEY_LIBSSH2) return 1;  // let libgit2 decide
+  if (cert == nullptr || cert->cert_type != GIT_CERT_HOSTKEY_LIBSSH2) return -1;
   const auto* ssh = reinterpret_cast<const git_cert_hostkey*>(cert);
-  if ((ssh->type & GIT_CERT_SSH_SHA256) == 0) return 1;
+  if ((ssh->type & GIT_CERT_SSH_SHA256) == 0) return -1;
 
   const std::string fingerprint = format_fingerprint(ssh->hash_sha256, 32);
-  std::cout << "首次连接服务器 " << (host != nullptr ? host : "(未知主机)") << "\n"
-            << "服务器指纹（SHA256）：SHA256:" << fingerprint << "\n"
-            << "请确认这是你信任的服务器。是否信任并继续？[y/N] ";
-  std::string answer;
-  std::getline(std::cin, answer);
-  if (answer != "y" && answer != "Y") {
-    std::cout << "已取消连接。\n";
-    return -1;
-  }
-
-  // Persist to known_hosts: "@cert-authority" is not used; store the plain
-  // hostkey line so future libssh2 connections validate automatically.
-  const char* home = std::getenv("HOME");
-  fs::path known_hosts;
-#ifdef _WIN32
-  if (const char* user_profile = std::getenv("USERPROFILE")) known_hosts = fs::path(user_profile) / ".ssh" / "known_hosts";
-#else
-  if (home != nullptr) known_hosts = fs::path(home) / ".ssh" / "known_hosts";
-#endif
-  if (!known_hosts.empty()) {
-    try {
-      fs::create_directories(known_hosts.parent_path());
-      std::ofstream out(known_hosts, std::ios::app);
-      if (out) {
-        const auto raw_type = ssh->raw_type;
-        std::string key_type = "ssh-ed25519";
-        switch (raw_type) {
-          case GIT_CERT_SSH_RAW_TYPE_RSA: key_type = "ssh-rsa"; break;
-          case GIT_CERT_SSH_RAW_TYPE_KEY_ECDSA_256: key_type = "ecdsa-sha2-nistp256"; break;
-          case GIT_CERT_SSH_RAW_TYPE_KEY_ECDSA_384: key_type = "ecdsa-sha2-nistp384"; break;
-          case GIT_CERT_SSH_RAW_TYPE_KEY_ECDSA_521: key_type = "ecdsa-sha2-nistp521"; break;
-          case GIT_CERT_SSH_RAW_TYPE_KEY_ED25519: key_type = "ssh-ed25519"; break;
-          default: key_type = "ssh-unknown"; break;
-        }
-        // Store as a fingerprint-only marker; libssh2 matches by fingerprint
-        // using the same line format as OpenSSH's known_hosts.
-        out << (host != nullptr ? host : "*") << " " << key_type << " " << fingerprint << "\n";
-      }
-    } catch (...) {
-      // Best effort; failing to persist should not block the connection.
-    }
-  }
-  return 0;
+  std::cerr << "SSH 主机密钥未通过 known_hosts 校验："
+            << (host != nullptr ? host : "(未知主机)") << "\n"
+            << "SHA256 指纹：" << fingerprint << "\n"
+            << "请先通过 ssh-keyscan 或可信管理员将该主机密钥写入 ~/.ssh/known_hosts，再重试。\n";
+  return -1;
 }
 
 git_remote_callbacks remote_callbacks() {
@@ -644,6 +608,28 @@ std::string GitRepository::staged_diff(std::size_t max_chars) const {
 
   git_diff* diff = nullptr;
   check(git_diff_tree_to_index(&diff, impl_->repository, head_tree, index, nullptr), "生成暂存差异");
+  std::unique_ptr<git_diff, decltype(&git_diff_free)> diff_holder(diff, git_diff_free);
+  return diff_to_text(diff, max_chars);
+}
+
+std::string GitRepository::working_diff(std::size_t max_chars) const {
+  git_tree* head_tree = nullptr;
+  std::unique_ptr<git_tree, decltype(&git_tree_free)> head_tree_holder(nullptr, git_tree_free);
+  git_oid head_id;
+  if (git_reference_name_to_id(&head_id, impl_->repository, "HEAD") == 0) {
+    git_commit* head_commit = nullptr;
+    check(git_commit_lookup(&head_commit, impl_->repository, &head_id), "读取 HEAD 提交");
+    std::unique_ptr<git_commit, decltype(&git_commit_free)> head_holder(head_commit, git_commit_free);
+    check(git_commit_tree(&head_tree, head_commit), "读取 HEAD 树");
+    head_tree_holder.reset(head_tree);
+  }
+
+  git_diff_options options = GIT_DIFF_OPTIONS_INIT;
+  options.flags = GIT_DIFF_INCLUDE_UNTRACKED | GIT_DIFF_SHOW_UNTRACKED_CONTENT | GIT_DIFF_RECURSE_UNTRACKED_DIRS;
+  // Compare HEAD directly with the worktree. This yields the final contents
+  // regardless of whether an individual file is staged, unstaged, or new.
+  git_diff* diff = nullptr;
+  check(git_diff_tree_to_workdir(&diff, impl_->repository, head_tree, &options), "生成工作区差异");
   std::unique_ptr<git_diff, decltype(&git_diff_free)> diff_holder(diff, git_diff_free);
   return diff_to_text(diff, max_chars);
 }

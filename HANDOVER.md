@@ -63,7 +63,7 @@ ctest --test-dir build -C Debug --output-on-failure
 
 ## 已知限制 / 后续优先项
 
-- `pr create --ai`、`changelog --ai`、冲突解决 AI 辅助：尚未实现（AI 工具链 v2 规划）。
+- 冲突解决 AI 辅助：尚未实现（AI 工具链 v2 规划）。`pr create --ai` 与 `changelog --ai` 已可生成文案，但不会直接调用托管平台 API 创建 PR 或写入 CHANGELOG。
 - `save --ai` 的 AI 输出可能不稳定，本地规则校验兜底；无网络时需 provider=ollama。
 - bundle 不自动扫描依赖 DLL/.so/.dylib（发布流程手工等价完成）。
 - macOS 分发需绕过 Gatekeeper（ad-hoc 签名未公证）。
