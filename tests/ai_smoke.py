@@ -51,7 +51,7 @@ def run(args, cwd=None, env=None, input_text=None):
 def main():
     # Skip when AI support is not compiled in.
     version = run(["--version"]).stdout
-    if "no AI" in version.lower():
+    if "ai disabled" in version.lower():
         print("skip: gitx built without AI support")
         return 0
 
@@ -103,6 +103,10 @@ def main():
             r = run(["review", "--ai"], cwd=repo)
             if r.returncode != 0:
                 print(f"FAIL: review --ai: {r.stderr}")
+                return 1
+            # Reviewing must not change the user's staging area.
+            if subprocess.run(["git", "-C", repo, "diff", "--cached", "--quiet"]).returncode != 0:
+                print("FAIL: review --ai unexpectedly staged changes")
                 return 1
 
             # changelog/pr need commits on a branch above the default branch.

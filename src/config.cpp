@@ -70,6 +70,26 @@ std::vector<std::string> parse_array(const std::string& value) {
   return values;
 }
 
+// TOML comments begin at # only outside a basic quoted string. This keeps
+// aliases and values that legitimately contain # intact.
+void remove_comment(std::string& line) {
+  bool quoted = false;
+  bool escaped = false;
+  for (std::size_t index = 0; index < line.size(); ++index) {
+    const char current = line[index];
+    if (quoted && current == '\\' && !escaped) {
+      escaped = true;
+      continue;
+    }
+    if (current == '"' && !escaped) quoted = !quoted;
+    if (current == '#' && !quoted) {
+      line.erase(index);
+      return;
+    }
+    escaped = false;
+  }
+}
+
 void load_toml(const fs::path& path, TeamConfig& config, std::map<std::string, std::string>* aliases) {
   std::ifstream input(path);
   if (!input) return;
@@ -77,8 +97,7 @@ void load_toml(const fs::path& path, TeamConfig& config, std::map<std::string, s
   std::string section;
   std::string line;
   while (std::getline(input, line)) {
-    const auto comment = line.find('#');
-    if (comment != std::string::npos) line.erase(comment);
+    remove_comment(line);
     line = trim(line);
     if (line.empty()) continue;
     if (line.front() == '[' && line.back() == ']') {

@@ -10,12 +10,21 @@
 #include <git2.h>
 
 #include <cstdlib>
+#include <cerrno>
 #include <filesystem>
 #include <iostream>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
+
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace fs = std::filesystem;
 using gitx::CommandNames;
@@ -54,6 +63,47 @@ void unsetenv_var(const char* name) {
   _putenv_s(name, "");
 #else
   unsetenv(name);
+#endif
+}
+
+bool is_safe_script_name(const std::string& name) {
+  if (name.empty() || name == "." || name == ".." || name.find_first_of("/\\") != std::string::npos) return false;
+  const fs::path path(name);
+  return !path.has_parent_path() && path.filename() == path;
+}
+
+int run_extension_script(const fs::path& script, const std::vector<std::string>& arguments, const fs::path& root) {
+#ifdef _WIN32
+  // _spawnv passes an argument vector directly to the process; unlike
+  // std::system it does not route user arguments through cmd.exe.
+  const std::string script_path = script.string();
+  const std::string previous = std::getenv("GITX_REPO_ROOT") != nullptr ? std::getenv("GITX_REPO_ROOT") : "";
+  setenv_or_override("GITX_REPO_ROOT", root.string());
+  std::vector<const char*> argv;
+  argv.reserve(arguments.size() + 2);
+  argv.push_back(script_path.c_str());
+  for (const auto& argument : arguments) argv.push_back(argument.c_str());
+  argv.push_back(nullptr);
+  const int result = _spawnv(_P_WAIT, script_path.c_str(), argv.data());
+  if (!previous.empty()) setenv_or_override("GITX_REPO_ROOT", previous);
+  else unsetenv_var("GITX_REPO_ROOT");
+  return result;
+#else
+  const pid_t child = fork();
+  if (child < 0) throw std::runtime_error("无法启动扩展脚本。");
+  if (child == 0) {
+    setenv_or_override("GITX_REPO_ROOT", root.string());
+    std::vector<char*> argv;
+    argv.reserve(arguments.size() + 2);
+    argv.push_back(const_cast<char*>(script.c_str()));
+    for (const auto& argument : arguments) argv.push_back(const_cast<char*>(argument.c_str()));
+    argv.push_back(nullptr);
+    execv(script.c_str(), argv.data());
+    _exit(127);
+  }
+  int status = 0;
+  while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
+  return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 #endif
 }
 
@@ -141,7 +191,8 @@ int main(int argc, char** argv) {
     std::string requested = argc > 1 ? argv[1] : "";
     if (requested == "--version" || requested == "-V") {
       std::cout << "gitx " << gitx::kVersion
-                << " (libgit2 " << LIBGIT2_VERSION << ")\n";
+                << " (libgit2 " << LIBGIT2_VERSION << ", AI "
+                << (gitx::AiClient::available() ? "enabled" : "disabled") << ")\n";
       git_libgit2_shutdown();
       return 0;
     }
@@ -182,8 +233,7 @@ int main(int argc, char** argv) {
     } else if (command == "save") {
       if (argc > 2 && std::string(argv[2]) == "--ai") {
         if (!gitx::AiClient::available()) { print_ai_unavailable(); return 1; }
-        repository.stage_all();
-        const auto diff = repository.staged_diff(team_config.ai.max_diff_chars);
+        const auto diff = repository.working_diff(team_config.ai.max_diff_chars);
         if (diff.empty()) throw std::runtime_error("没有可提交的改动。");
         auto client = make_ai_client(team_config);
         const std::string system_prompt =
@@ -225,8 +275,7 @@ int main(int argc, char** argv) {
     } else if (command == "review") {
       if (!gitx::AiClient::available()) { print_ai_unavailable(); return 1; }
       auto client = make_ai_client(team_config);
-      repository.stage_all();
-      const auto diff = repository.staged_diff(team_config.ai.max_diff_chars);
+      const auto diff = repository.working_diff(team_config.ai.max_diff_chars);
       if (diff.empty()) throw std::runtime_error("没有可审查的改动。");
       const std::string system_prompt =
           "你是代码审查助手。审查以下 diff，用中文列出问题清单：每项标注严重程度（高/中/低）、相关文件、具体问题和修改建议。"
@@ -407,6 +456,7 @@ int main(int argc, char** argv) {
       // User extension scripts: run an executable from the project's
       // .gitx/scripts or the user's ~/.config/gitx/scripts directory.
       const auto find_script = [&](const std::string& name) -> std::optional<fs::path> {
+        if (!is_safe_script_name(name)) return std::nullopt;
         std::vector<fs::path> roots{root / ".gitx" / "scripts"};
         if (const char* config_home = std::getenv("XDG_CONFIG_HOME")) {
           roots.push_back(fs::path(config_home) / "gitx" / "scripts");
@@ -462,22 +512,9 @@ int main(int argc, char** argv) {
         throw std::runtime_error("找不到可执行脚本 '" + std::string(argv[2]) +
                                  "'。请放入 .gitx/scripts/ 或 ~/.config/gitx/scripts/ 并赋予执行权限。");
       }
-      std::ostringstream command;
-#ifdef _WIN32
-      command << "\"" << script->string() << "\"";
-#else
-      command << "'" << script->string() << "'";
-#endif
-      for (int index = 3; index < argc; ++index) {
-        command << " \"" << argv[index] << "\"";
-      }
-      // The repository root is passed as the first environment variable so
-      // scripts know where they run.
-      const std::string previous = std::getenv("GITX_REPO_ROOT") != nullptr ? std::getenv("GITX_REPO_ROOT") : "";
-      setenv_or_override("GITX_REPO_ROOT", root.string());
-      const auto exit_code = std::system(command.str().c_str());
-      if (!previous.empty()) setenv_or_override("GITX_REPO_ROOT", previous);
-      else unsetenv_var("GITX_REPO_ROOT");
+      std::vector<std::string> arguments;
+      for (int index = 3; index < argc; ++index) arguments.emplace_back(argv[index]);
+      const auto exit_code = run_extension_script(*script, arguments, root);
       return exit_code == 0 ? 0 : 1;
     } else {
       show_help();

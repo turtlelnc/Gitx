@@ -15,6 +15,13 @@ int main() {
   assert(!gitx::ConfigStore::validate_branch(config, "feature/login").has_value());
   assert(gitx::ConfigStore::validate_branch(config, "random").has_value());
 
+  {
+    std::ofstream config_file(root / ".gitx" / "config.toml", std::ios::app);
+    config_file << "\n[aliases]\n保存 = \"save # still a value\" # trailing comment\n";
+  }
+  const auto with_hash = gitx::ConfigStore::load_team(root);
+  assert(with_hash.aliases.at("save # still a value") == "保存");
+
   gitx::CommandNames names({{"保存", "save"}}, {{"提交", "save"}});
   assert(names.canonicalize("保存") == "save");
   assert(names.canonicalize("提交") == "save");

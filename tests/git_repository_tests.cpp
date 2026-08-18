@@ -69,6 +69,12 @@ void test_init_and_commit() {
   assert(!repository.history(5).empty());
   assert(repository.history(1).front().summary == "feat(cli): first commit");
 
+  // AI preview must be able to inspect changes without silently staging them.
+  write_file(root / "preview.txt", "pending\n");
+  assert(repository.staged_diff(1024).empty());
+  assert(!repository.working_diff(1024).empty());
+  assert(repository.staged_diff(1024).empty());
+
   fs::remove_all(root);
 }
 

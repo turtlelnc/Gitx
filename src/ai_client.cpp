@@ -13,6 +13,11 @@
 #include <curl/curl.h>
 #endif
 
+#ifdef _WIN32
+#include <windows.h>
+#include <wincred.h>
+#endif
+
 namespace fs = std::filesystem;
 
 namespace gitx {
@@ -106,14 +111,11 @@ std::optional<std::string> keyring_load() {
   if (const char* env = std::getenv("GITX_AI_KEY")) return std::string(env);
 
 #ifdef _WIN32
-  // Windows Credential Manager via cmdkey is awkward for reading; use a
-  // fallback file with tight permissions instead, documented in the design.
-  const char* app_data = std::getenv("APPDATA");
-  if (app_data == nullptr) return std::nullopt;
-  const fs::path file = fs::path(app_data) / "gitx" / "secret";
-  std::ifstream in(file);
-  std::string value;
-  if (in && std::getline(in, value) && !value.empty()) return value;
+  PCREDENTIALW credential = nullptr;
+  if (CredReadW(L"gitx-ai-key", CRED_TYPE_GENERIC, 0, &credential) == 0) return std::nullopt;
+  std::string value(reinterpret_cast<const char*>(credential->CredentialBlob), credential->CredentialBlobSize);
+  CredFree(credential);
+  if (!value.empty()) return value;
   return std::nullopt;
 #elif defined(__APPLE__)
   // macOS Keychain: security find-generic-password
@@ -151,14 +153,14 @@ std::optional<std::string> keyring_load() {
 
 void keyring_store(const std::string& key) {
 #ifdef _WIN32
-  const char* app_data = std::getenv("APPDATA");
-  if (app_data == nullptr) throw std::runtime_error("无法定位 APPDATA 目录。");
-  const fs::path dir = fs::path(app_data) / "gitx";
-  fs::create_directories(dir);
-  const fs::path file = dir / "secret";
-  std::ofstream out(file, std::ios::trunc);
-  if (!out) throw std::runtime_error("无法写入密钥文件: " + file.string());
-  out << key << "\n";
+  CREDENTIALW credential{};
+  credential.Type = CRED_TYPE_GENERIC;
+  credential.TargetName = const_cast<wchar_t*>(L"gitx-ai-key");
+  credential.UserName = const_cast<wchar_t*>(L"gitx");
+  credential.Persist = CRED_PERSIST_LOCAL_MACHINE;
+  credential.CredentialBlobSize = static_cast<DWORD>(key.size());
+  credential.CredentialBlob = reinterpret_cast<LPBYTE>(const_cast<char*>(key.data()));
+  if (CredWriteW(&credential, 0) == 0) throw std::runtime_error("无法写入 Windows 凭据管理器。");
 #elif defined(__APPLE__)
   // Only store when the item does not already exist (add vs update).
   const std::string check = "security find-generic-password -s gitx -a gitx 2>/dev/null";

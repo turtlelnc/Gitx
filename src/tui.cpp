@@ -54,7 +54,7 @@ void render(const std::vector<StatusItem>& items, int selected, int top, int row
     term::write("\x1b[K\r\n");
   }
   term::set_color(7);
-  std::string hint = "↑↓ 选择  [空格]切换暂存  [d]查看diff  [c]提交  [q]退出  [e]编辑文件";
+  std::string hint = "↑↓ 选择  [d]查看暂存 diff  [c]提交全部改动  [q]退出  [e]编辑文件";
   if (cols > 0) hint = hint.substr(0, static_cast<std::size_t>(cols));
   term::write(hint);
   term::set_color(0);

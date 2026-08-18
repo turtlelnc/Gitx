@@ -5,12 +5,19 @@
 #include <cstring>
 #include <cstdlib>
 #include <fstream>
+#include <limits>
+#include <random>
 #include <stdexcept>
 #include <vector>
 
 namespace fs = std::filesystem;
 namespace gitx { namespace {
 constexpr char Magic[] = "GITXBND3";
+constexpr std::uint32_t kMaxFileCount = 10000;
+constexpr std::uint32_t kMaxNameLength = 4096;
+constexpr std::uint32_t kMaxEntryLength = 4096;
+constexpr std::uint64_t kMaxFileSize = 512ULL * 1024 * 1024;
+constexpr std::uint64_t kMaxBundleSize = 2ULL * 1024 * 1024 * 1024;
 struct Footer {
   char magic[8];
   std::uint64_t offset;   // payload start (right after the launcher copy)
@@ -54,6 +61,22 @@ bool safe_name(const fs::path& name) {
   for (const auto& part : name) if (part == "..") return false;
   return true;
 }
+
+void read_exact(std::ifstream& input, char* data, std::streamsize size) {
+  input.read(data, size);
+  if (input.gcount() != size) throw std::runtime_error("自解压包读取不完整");
+}
+
+fs::path make_temp_root() {
+  std::random_device random;
+  const auto base = fs::temp_directory_path();
+  for (int attempt = 0; attempt < 32; ++attempt) {
+    const auto suffix = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" + std::to_string(random());
+    const auto root = base / ("gitx-bundle-" + suffix);
+    if (fs::create_directory(root)) return root;
+  }
+  throw std::runtime_error("无法创建安全的临时解压目录");
+}
 } 
 void Bundle::create(const fs::path& launcher, const fs::path& output, const fs::path& project, const std::string& entry, const std::vector<fs::path>& runtimes) {
   if (!fs::is_regular_file(launcher)) throw std::runtime_error("找不到 gitx 可执行文件: " + launcher.string());
@@ -85,17 +108,53 @@ bool Bundle::extract_and_launch_if_present(const fs::path& executable) {
   if (std::memcmp(foot.magic, Magic, 8) != 0) return false;
   if (foot.offset >= file_size || foot.offset + sizeof(Footer) > file_size) throw std::runtime_error("自解压包损坏（偏移非法）");
   const auto payload_length = file_size - foot.offset - sizeof(Footer);
+  if (payload_length > kMaxBundleSize) throw std::runtime_error("自解压包过大，已拒绝解压");
   // Integrity check before touching the filesystem.
-  if (payload_crc(executable, foot.offset, payload_length) != foot.crc) throw std::runtime_error("自解压包完整性校验失败，包可能已损坏或被篡改");
-  in.seekg(static_cast<std::streamoff>(foot.offset)); const auto count=get<std::uint32_t>(in), entry_len=get<std::uint32_t>(in); std::string entry(entry_len, '\0'); in.read(entry.data(), entry_len);
-  const auto root=fs::temp_directory_path()/("gitx-bundle-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())); fs::create_directories(root);
+  if (payload_crc(executable, foot.offset, payload_length) != foot.crc) throw std::runtime_error("自解压包完整性校验失败，包可能已损坏");
+  in.seekg(static_cast<std::streamoff>(foot.offset));
+  const auto count = get<std::uint32_t>(in);
+  const auto entry_len = get<std::uint32_t>(in);
+  if (count > kMaxFileCount || entry_len == 0 || entry_len > kMaxEntryLength) throw std::runtime_error("自解压包元数据非法");
+  std::string entry(entry_len, '\0');
+  read_exact(in, entry.data(), static_cast<std::streamsize>(entry_len));
+  if (!safe_name(fs::path(entry))) throw std::runtime_error("包内入口路径非法");
+  const auto root = make_temp_root();
   // Always remove the temporary directory, including on failure or after launch.
   try {
-    for(std::uint32_t n=0;n<count;++n){
-      const auto nl=get<std::uint32_t>(in); const auto mode=get<std::uint32_t>(in); const auto original=get<std::uint64_t>(in); const auto compressed=get<std::uint64_t>(in);
-      std::string name(nl,'\0'); in.read(name.data(),nl); if(!safe_name(fs::path(name))) throw std::runtime_error("包内路径非法"); std::vector<Bytef> zipped(compressed), raw(original); in.read(reinterpret_cast<char*>(zipped.data()),compressed); uLongf size=original; if(uncompress(raw.data(),&size,zipped.data(),compressed)!=Z_OK || size!=original) throw std::runtime_error("包内文件解压失败"); const auto target=root/name; fs::create_directories(target.parent_path()); std::ofstream out(target,std::ios::binary); out.write(reinterpret_cast<char*>(raw.data()),original); out.close(); fs::permissions(target, static_cast<fs::perms>(mode), fs::perm_options::replace);
+    std::uint64_t total_size = 0;
+    for (std::uint32_t n = 0; n < count; ++n) {
+      const auto name_length = get<std::uint32_t>(in);
+      const auto mode = get<std::uint32_t>(in);
+      const auto original = get<std::uint64_t>(in);
+      const auto compressed = get<std::uint64_t>(in);
+      if (name_length == 0 || name_length > kMaxNameLength || original > kMaxFileSize || compressed > kMaxFileSize ||
+          compressed > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max()) ||
+          original > static_cast<std::uint64_t>(std::numeric_limits<uLongf>::max()) || total_size > kMaxBundleSize - original) {
+        throw std::runtime_error("包内文件元数据非法或过大");
+      }
+      total_size += original;
+      std::string name(name_length, '\0');
+      read_exact(in, name.data(), static_cast<std::streamsize>(name_length));
+      if (!safe_name(fs::path(name))) throw std::runtime_error("包内路径非法");
+      std::vector<Bytef> zipped(static_cast<std::size_t>(compressed));
+      std::vector<Bytef> raw(static_cast<std::size_t>(original));
+      read_exact(in, reinterpret_cast<char*>(zipped.data()), static_cast<std::streamsize>(compressed));
+      uLongf size = static_cast<uLongf>(original);
+      if (uncompress(raw.data(), &size, zipped.data(), static_cast<uLong>(compressed)) != Z_OK || size != original) {
+        throw std::runtime_error("包内文件解压失败");
+      }
+      const auto target = root / name;
+      fs::create_directories(target.parent_path());
+      std::ofstream out(target, std::ios::binary);
+      if (!out) throw std::runtime_error("无法写入解压文件");
+      out.write(reinterpret_cast<const char*>(raw.data()), static_cast<std::streamsize>(original));
+      if (!out) throw std::runtime_error("写入解压文件失败");
+      fs::permissions(target, static_cast<fs::perms>(mode), fs::perm_options::replace);
     }
-    const auto target=root/entry; if(!fs::exists(target)) throw std::runtime_error("包内入口不存在: "+entry); std::system((std::string("\"")+target.string()+"\"").c_str());
+    const auto target = root / entry;
+    if (!fs::is_regular_file(target)) throw std::runtime_error("包内入口不存在: " + entry);
+    const auto exit_code = std::system((std::string("\"") + target.string() + "\"").c_str());
+    if (exit_code != 0) throw std::runtime_error("包内入口程序执行失败");
   } catch (...) {
     fs::remove_all(root);
     throw;

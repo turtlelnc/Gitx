@@ -91,7 +91,7 @@ gitx bundle create demo-bundle.exe bin/demo.exe dist
 
 ## AI 工具链
 
-gitx 内置 AI 助手（需要 libcurl，macOS/Linux 系统自带；Windows 需 vcpkg 安装）：
+gitx 内置 AI 助手（默认构建会使用仓库内 vendor 的 libcurl）：
 
 ```text
 gitx save --ai          # AI 生成符合团队规范的提交信息，确认后提交
@@ -101,7 +101,7 @@ gitx changelog --ai     # AI 生成相对默认分支的变更日志
 gitx pr create --ai     # AI 生成 Pull Request 标题与描述
 ```
 
-首次使用会提示输入 API 密钥，安全存入系统钥匙串（macOS Keychain / Windows 凭据管理器 / Linux libsecret），也可用 `GITX_AI_KEY` 环境变量。模型在 `.gitx/config.toml` 的 `[ai]` 段配置：
+首次使用会提示输入 API 密钥，安全存入系统钥匙串（macOS Keychain / Windows 凭据管理器 / Linux libsecret）；Linux 没有 libsecret 时才回退至权限为 600 的本地文件。也可用 `GITX_AI_KEY` 环境变量。模型在 `.gitx/config.toml` 的 `[ai]` 段配置：
 
 ```toml
 [ai]
@@ -128,12 +128,12 @@ gitx tui                # 全屏交互界面：文件状态列表 + diff 预览 
 gitx edit <文件>         # 内置文本编辑器（↑↓←→ 移动、Ctrl+S 保存、Ctrl+X 退出）
 ```
 
-- `tui` 中：↑↓ 选择文件，`d` 查看 diff，`c` 输入提交信息并提交，`e` 用内置编辑器打开选中文件，`q` 退出。
+- `tui` 中：↑↓ 选择文件，`d` 查看全部已暂存 diff，`c` 暂存全部改动后输入提交信息并提交，`e` 用内置编辑器打开选中文件，`q` 退出。
 - 合并/变基冲突的 `m`（手动编辑）选项会直接打开内置编辑器，保存后自动继续解决流程。
 
 ## 认证
 
-SSH 远端使用本机 SSH agent；首次连接未知服务器会显示指纹并确认。HTTPS 认证可在当前进程环境中提供 `GITX_HTTPS_USER` 和 `GITX_HTTPS_TOKEN`；应用不会将凭据写入磁盘。
+SSH 远端使用本机 SSH agent，并要求主机密钥已存在于 `~/.ssh/known_hosts`（可用 `ssh-keyscan` 在可信网络中加入）。HTTPS 认证可在当前进程环境中提供 `GITX_HTTPS_USER` 和 `GITX_HTTPS_TOKEN`；应用不会将凭据写入磁盘。
 
 ## 测试
 
