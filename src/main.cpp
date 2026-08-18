@@ -1,14 +1,12 @@
 #include "gitx/command_names.hpp"
-#include "gitx/bundle.hpp"
 #include "gitx/config.hpp"
 #include "gitx/git_repository.hpp"
 #include "gitx/ai_client.hpp"
-#include "gitx/editor.hpp"
-#include "gitx/tui.hpp"
 #include "gitx/version.hpp"
 
 #include <git2.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cerrno>
 #include <filesystem>
@@ -113,27 +111,27 @@ void show_help() {
 命令：
   start [目录]                    初始化仓库并创建 .gitx/config.toml
   start clone <URL> <目录>        克隆仓库
-  open                            显示当前仓库信息
   status                          显示工作区改动
-  save [提交信息]                 暂存全部改动并按团队规则提交
-  save --ai                       用 AI 生成符合规范的提交信息
+  save [提交信息]                 提交已暂存改动并按团队规则校验
+  save --all [提交信息]           暂存全部改动后提交
+  save <文件...> -- <提交信息>    仅暂存指定文件后提交
+  save --ai [--all]               用 AI 生成符合规范的提交信息（--all 显式暂存全部）
   history [数量]                  查看提交历史
+  revert <提交号>                 创建一条反向提交，安全回退普通提交
   explain <提交号>                用 AI 解读一条提交
   review --ai                     用 AI 审查工作区改动
   changelog --ai                  用 AI 生成相对默认分支的变更日志
   pr create --ai [目标分支]       用 AI 生成 Pull Request 标题与描述
   branch [new|switch] [名称]      查看、创建或切换分支
-  integrate merge <分支>          合并分支；冲突时逐块选择解决方式
+  integrate merge <分支>          合并分支；冲突时逐文件选择解决方式
   integrate rebase <分支>         把当前分支变基到目标分支之上
   sync [fetch|pull|push]          与 origin 同步
-  sync publish <URL>              关联 origin 并首次推送当前分支
+  sync publish <URL>              关联或复用 origin，并推送当前分支
+  sync set-origin <URL>            明确修改 origin 地址
   stash [save|pop] [说明]         保存或恢复暂存
-  tag <名称> [说明]               创建标签
-  bundle create <文件> <入口> [目录...] 生成含源码、产物和依赖的自解压包
   config init                     创建默认团队配置
+  config user show|set <姓名> <邮箱>|temporary  管理本仓库提交身份
   doctor                          检查环境、远端与同步状态
-  edit <文件>                     打开内置文本编辑器
-  tui                             打开全屏交互界面（状态/暂存/提交）
   x <脚本名> [参数...]            运行扩展脚本（.gitx/scripts/ 或 ~/.config/gitx/scripts/）
   x list                          列出可用扩展脚本
 
@@ -144,7 +142,7 @@ void show_help() {
 
 std::string choose_command() {
   std::cout << "\n请选择操作：\n"
-            << "  1) 状态  2) 保存提交  3) 历史  4) 分支  5) 合并  6) 同步  7) 暂存  8) 标签\n";
+            << "  1) 状态  2) 保存提交  3) 历史  4) 分支  5) 合并  6) 同步  7) 暂存\n";
   const auto choice = ask("> ");
   if (choice == "1") return "status";
   if (choice == "2") return "save";
@@ -153,7 +151,6 @@ std::string choose_command() {
   if (choice == "5") return "integrate";
   if (choice == "6") return "sync";
   if (choice == "7") return "stash";
-  if (choice == "8") return "tag";
   return "help";
 }
 
@@ -184,10 +181,6 @@ void print_ai_unavailable() {
 int main(int argc, char** argv) {
   git_libgit2_init();
   try {
-    if (argc == 1 && gitx::Bundle::extract_and_launch_if_present(fs::absolute(argv[0]))) {
-      git_libgit2_shutdown();
-      return 0;
-    }
     std::string requested = argc > 1 ? argv[1] : "";
     if (requested == "--version" || requested == "-V") {
       std::cout << "gitx " << gitx::kVersion
@@ -206,13 +199,18 @@ int main(int argc, char** argv) {
       if (argc > 2 && std::string(argv[2]) == "clone") {
         if (argc < 5) throw std::runtime_error("用法：gitx start clone <URL> <目录>");
         GitRepository::clone(argv[3], argv[4]);
-        ConfigStore::write_default_team_config(argv[4]);
-        std::cout << "已克隆仓库，并创建团队规范文件。\n";
+        const auto created_config = ConfigStore::write_default_team_config(argv[4]);
+        std::cout << "已克隆仓库：" << fs::absolute(argv[4]).string() << "\n"
+                  << (created_config ? "已创建默认团队规范文件。\n" : "已读取仓库现有团队规范文件。\n")
+                  << "下一步：cd \"" << fs::absolute(argv[4]).string() << "\"\n";
       } else {
         const fs::path path = argc > 2 ? fs::path(argv[2]) : fs::current_path();
         GitRepository::init(path, "main");
         ConfigStore::write_default_team_config(path);
-        std::cout << "已初始化仓库（main），并创建 .gitx/config.toml。\n";
+        const auto created_ignore = ConfigStore::write_default_ignore_file(path);
+        std::cout << "已初始化仓库（main）：" << fs::absolute(path).string() << "\n"
+                  << "已创建 .gitx/config.toml。" << (created_ignore ? "并已创建包含 .DS_Store 的默认 .gitignore。\n" : "\n")
+                  << "下一步：cd \"" << fs::absolute(path).string() << "\"\n";
       }
       git_libgit2_shutdown();
       return 0;
@@ -224,16 +222,26 @@ int main(int argc, char** argv) {
     const CommandNames names(team_config.aliases, ConfigStore::load_user_aliases());
     std::string command = requested.empty() ? choose_command() : names.canonicalize(requested);
 
-    if (command == "open") {
+    if (command == "status") {
       std::cout << "仓库：" << root.string() << "\n当前分支：" << repository.current_branch() << "\n";
-    } else if (command == "status") {
       const auto items = repository.status();
       if (items.empty()) std::cout << "工作区干净。\n";
       for (const auto& item : items) std::cout << "[" << item.state << "] " << item.path << "\n";
     } else if (command == "save") {
+      if (!repository.has_identity()) {
+        throw std::runtime_error("尚未配置提交身份。运行：gitx config user set \"姓名\" \"邮箱\"；"
+                                 "如仅需临时本地提交，可明确运行：gitx config user temporary。");
+      }
       if (argc > 2 && std::string(argv[2]) == "--ai") {
         if (!gitx::AiClient::available()) { print_ai_unavailable(); return 1; }
-        const auto diff = repository.working_diff(team_config.ai.max_diff_chars);
+        if (argc > 3 && std::string(argv[3]) != "--all") throw std::runtime_error("用法：gitx save --ai [--all]");
+        if (argc > 4) throw std::runtime_error("用法：gitx save --ai [--all]");
+        const bool stage_all = argc > 3;
+        if (!stage_all && !repository.has_staged_changes()) {
+          throw std::runtime_error("没有已暂存的改动。请先使用 gitx save --all，或 gitx save <文件...> -- <提交信息> 选择文件。");
+        }
+        const auto diff = stage_all ? repository.working_diff(team_config.ai.max_diff_chars)
+                                    : repository.staged_diff(team_config.ai.max_diff_chars);
         if (diff.empty()) throw std::runtime_error("没有可提交的改动。");
         auto client = make_ai_client(team_config);
         const std::string system_prompt =
@@ -253,12 +261,46 @@ int main(int argc, char** argv) {
           std::cout << "已取消。\n";
           return 0;
         }
-        repository.stage_all();
+        if (stage_all) repository.stage_all();
         repository.commit(message, team_config);
         std::cout << "已创建提交。\n";
       } else {
-        const auto message = argc > 2 ? join(2, argc, argv) : ask("提交信息（" + team_config.commit.template_text + "）：");
-        repository.stage_all();
+        std::vector<std::string> arguments;
+        for (int index = 2; index < argc; ++index) arguments.emplace_back(argv[index]);
+        std::string message;
+        if (!arguments.empty() && arguments.front() == "--all") {
+          repository.stage_all();
+          if (arguments.size() > 1) {
+            std::vector<const char*> message_args;
+            message_args.reserve(arguments.size() - 1);
+            for (std::size_t index = 1; index < arguments.size(); ++index) message_args.push_back(arguments[index].c_str());
+            std::string joined;
+            for (std::size_t index = 0; index < message_args.size(); ++index) {
+              if (index != 0) joined += " ";
+              joined += message_args[index];
+            }
+            message = joined;
+          }
+        } else {
+          const auto separator = std::find(arguments.begin(), arguments.end(), "--");
+          if (separator != arguments.end()) {
+            std::vector<std::string> paths(arguments.begin(), separator);
+            if (paths.empty() || separator + 1 == arguments.end()) {
+              throw std::runtime_error("用法：gitx save <文件...> -- <提交信息>");
+            }
+            repository.stage_paths(paths);
+            for (auto item = separator + 1; item != arguments.end(); ++item) {
+              if (!message.empty()) message += " ";
+              message += *item;
+            }
+          } else {
+            message = argc > 2 ? join(2, argc, argv) : "";
+          }
+        }
+        if (!repository.has_staged_changes()) {
+          throw std::runtime_error("没有已暂存的改动。使用 gitx save --all <提交信息> 暂存全部，或 gitx save <文件...> -- <提交信息> 选择文件。");
+        }
+        if (message.empty()) message = ask("提交信息（" + team_config.commit.template_text + "）：");
         repository.commit(message, team_config);
         std::cout << "已创建提交。\n";
       }
@@ -334,6 +376,10 @@ int main(int argc, char** argv) {
     } else if (command == "history") {
       const auto limit = argc > 2 ? static_cast<std::size_t>(std::stoul(argv[2])) : 20U;
       for (const auto& item : repository.history(limit)) std::cout << item.id << " " << item.summary << " — " << item.author << "\n";
+    } else if (command == "revert") {
+      if (argc != 3) throw std::runtime_error("用法：gitx revert <提交号>");
+      repository.revert_commit(argv[2], team_config);
+      std::cout << "已创建反向提交。请检查 gitx status 和 gitx history，确认后再运行 gitx sync push。\n";
     } else if (command == "branch") {
       const std::string action = argc > 2 ? argv[2] : "";
       if (action == "new") {
@@ -359,40 +405,68 @@ int main(int argc, char** argv) {
       }
     } else if (command == "sync") {
       const auto action = argc > 2 ? std::string(argv[2]) : ask("选择 fetch、pull、push 或 publish：");
-      if (action == "fetch") repository.fetch();
-      else if (action == "pull") repository.pull();
-      else if (action == "push") repository.push();
+      const auto branch = repository.current_branch();
+      if (action == "fetch") {
+        repository.fetch();
+        std::cout << "已获取 origin 的远端更新。\n";
+      } else if (action == "pull") {
+        repository.pull();
+        std::cout << "已同步当前分支 " << branch << "（origin/" << branch << "）。\n";
+      } else if (action == "push") {
+        repository.push();
+        std::cout << "已推送 " << branch << " 到 origin/" << branch << "。\n";
+      }
       else if (action == "publish") {
         if (argc < 4) throw std::runtime_error("用法：gitx sync publish <URL>");
-        repository.add_remote("origin", argv[3]);
+        const auto requested_url = std::string(argv[3]);
+        const auto existing_url = repository.remote_url();
+        if (!existing_url.has_value()) {
+          repository.add_remote("origin", requested_url);
+        } else if (*existing_url != requested_url) {
+          throw std::runtime_error("origin 已指向 " + *existing_url + "。如确认要替换，请运行：gitx sync set-origin <URL>");
+        }
         repository.push();
-        std::cout << "已发布到服务器。其他成员可用以下命令加入协作：\n"
-                  << "  gitx start clone " << argv[3] << " 项目名\n";
+        std::cout << (existing_url.has_value() ? "origin 地址已存在，已推送当前分支。\n" : "已发布到服务器。\n")
+                  << "其他成员可用以下命令加入协作：\n"
+                  << "  gitx start clone " << requested_url << " 项目名\n";
+      } else if (action == "set-origin") {
+        if (argc < 4) throw std::runtime_error("用法：gitx sync set-origin <URL>");
+        if (!repository.remote_url().has_value()) throw std::runtime_error("尚未配置 origin。请先运行 gitx sync publish <URL>。");
+        repository.set_remote_url("origin", argv[3]);
+        std::cout << "已将 origin 修改为：" << argv[3] << "\n";
       } else throw std::runtime_error("未知同步操作：" + action);
-      if (action != "publish") std::cout << "同步完成。\n";
     } else if (command == "stash") {
       const auto action = argc > 2 ? std::string(argv[2]) : ask("选择 save 或 pop：");
       if (action == "save") repository.stash_save(argc > 3 ? join(3, argc, argv) : ask("暂存说明："));
       else if (action == "pop") repository.stash_pop();
       else throw std::runtime_error("用法：gitx stash [save|pop] [说明]");
       std::cout << "暂存操作完成。\n";
-    } else if (command == "tag") {
-      const auto name = argc > 2 ? std::string(argv[2]) : ask("标签名称：");
-      const auto message = argc > 3 ? join(3, argc, argv) : ask("标签说明（可留空）：");
-      repository.create_tag(name, message);
-      std::cout << "已创建标签。\n";
-    } else if (command == "bundle") {
-      if (argc < 5 || std::string(argv[2]) != "create") {
-        throw std::runtime_error("用法：gitx bundle create <输出文件> <运行时入口相对路径> [产物或依赖目录...]");
-      }
-      std::vector<fs::path> runtime;
-      for (int index = 5; index < argc; ++index) runtime.emplace_back(argv[index]);
-      if (runtime.empty()) throw std::runtime_error("请至少提供一个产物或依赖目录。");
-      gitx::Bundle::create(fs::absolute(argv[0]), argv[3], root, argv[4], runtime);
-      std::cout << "已生成自解压包：" << fs::absolute(argv[3]).string() << "\n";
     } else if (command == "config") {
       if (argc > 2 && std::string(argv[2]) == "init") {
         std::cout << (ConfigStore::write_default_team_config(root) ? "已创建团队配置。\n" : "团队配置已存在，未覆盖。\n");
+      } else if (argc > 2 && std::string(argv[2]) == "user") {
+        const auto action = argc > 3 ? std::string(argv[3]) : "show";
+        if (action == "show") {
+          if (!repository.has_identity()) {
+            std::cout << "未配置提交身份。\n"
+                      << "设置真实身份：gitx config user set \"姓名\" \"邮箱\"\n"
+                      << "临时设备署名：gitx config user temporary（仅用于本地快速提交，不会自动改写历史）\n";
+          } else {
+            std::cout << "提交身份：" << repository.identity_name() << " <" << repository.identity_email() << ">"
+                      << (repository.uses_temporary_identity() ? "（临时设备署名）" : "") << "\n";
+          }
+        } else if (action == "set") {
+          if (argc != 6) throw std::runtime_error("用法：gitx config user set <姓名> <邮箱>");
+          repository.set_identity(argv[4], argv[5]);
+          std::cout << "已为当前仓库设置提交身份：" << repository.identity_name() << " <" << repository.identity_email() << ">\n";
+        } else if (action == "temporary") {
+          if (argc != 4) throw std::runtime_error("用法：gitx config user temporary");
+          const auto name = repository.set_temporary_identity();
+          std::cout << "已设置临时设备署名：" << name << "。\n"
+                    << "它会出现在 Git 历史中；之后设置真实姓名只影响新提交，不会自动改写已推送历史。\n";
+        } else {
+          throw std::runtime_error("用法：gitx config user [show|set <姓名> <邮箱>|temporary]");
+        }
       } else {
         std::cout << "团队配置：" << (root / ".gitx" / "config.toml").string() << "\n"
                   << "个人配置：" << ConfigStore::user_config_path().string() << "\n";
@@ -424,7 +498,11 @@ int main(int argc, char** argv) {
       }
 
       const auto identity = repository.identity_name();
-      ok(!identity.empty(), std::string("已配置提交身份：") + (identity.empty() ? "未配置，提交会显示为 gitx user。运行 git config user.name \"你的名字\"" : identity));
+      const auto email = repository.identity_email();
+      ok(!identity.empty() && !email.empty(), identity.empty() || email.empty()
+          ? "未配置完整提交身份。运行：gitx config user set \"姓名\" \"邮箱\""
+          : std::string("已配置提交身份：") + identity + " <" + email + ">" +
+                (repository.uses_temporary_identity() ? "（临时设备署名；建议在推送前设置真实身份）" : ""));
 
 #ifdef _WIN32
       const char* profile = std::getenv("USERPROFILE");
@@ -442,16 +520,15 @@ int main(int argc, char** argv) {
           }
         }
       }
-      ok(has_key, std::string("SSH 密钥：") + (has_key ? "已找到" : "未找到（使用 HTTPS 协议可忽略；SSH 推送前需先生成密钥并配置到服务器）"));
+      ok(has_key, std::string("SSH 私钥文件：") + (has_key ? "已找到" : "未找到（使用 HTTPS 协议可忽略；SSH 推送前需先生成密钥并配置到服务器）"));
+      const bool ssh_remote = url.has_value() && (url->starts_with("ssh://") || (!url->starts_with("http://") && !url->starts_with("https://")));
+      if (ssh_remote) {
+        const auto agent_ready = GitRepository::ssh_agent_has_identity();
+        ok(agent_ready, agent_ready ? "SSH agent 已加载可用密钥" : "SSH agent 未加载密钥。macOS 可运行：ssh-add --apple-use-keychain ~/.ssh/id_ed25519");
+      }
 
       std::cout << (problems == 0 ? "\n诊断完成：一切正常。\n" : "\n诊断完成：发现 " + std::to_string(problems) + " 个问题，请按提示处理。\n");
       if (problems > 0) return 1;
-    } else if (command == "edit") {
-      if (argc < 3) throw std::runtime_error("用法：gitx edit <文件路径>（打开内置文本编辑器）");
-      const auto target = fs::path(argv[2]).is_absolute() ? fs::path(argv[2]) : root / argv[2];
-      gitx::editor::edit_file(target);
-    } else if (command == "tui") {
-      gitx::tui::run(repository, team_config);
     } else if (command == "x") {
       // User extension scripts: run an executable from the project's
       // .gitx/scripts or the user's ~/.config/gitx/scripts directory.

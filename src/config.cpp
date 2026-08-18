@@ -191,6 +191,15 @@ provider = "deepseek"
   return true;
 }
 
+bool ConfigStore::write_default_ignore_file(const fs::path& repository_root) {
+  const auto path = repository_root / ".gitignore";
+  if (fs::exists(path)) return false;
+  std::ofstream output(path);
+  if (!output) throw std::runtime_error("无法创建默认忽略文件: " + path.string());
+  output << "# 操作系统自动生成的文件\n.DS_Store\nThumbs.db\n";
+  return true;
+}
+
 std::optional<std::string> ConfigStore::validate_commit(const TeamConfig& config, const std::string& message) {
   try {
     if (!std::regex_match(message, std::regex(config.commit.pattern))) {

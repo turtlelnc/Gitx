@@ -44,16 +44,6 @@ std::string read_file(const fs::path& file) {
   return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
-// Run `git` in `repo` and return whether it exited 0.
-bool git_ok(const fs::path& repo, const std::string& args) {
-#ifdef _WIN32
-  const auto command = "git -C \"" + repo.string() + "\" " + args + " >nul 2>&1";
-#else
-  const auto command = "git -C \"" + repo.string() + "\" " + args + " >/dev/null 2>&1";
-#endif
-  return std::system(command.c_str()) == 0;
-}
-
 void test_init_and_commit() {
   const auto root = make_temp_dir("gitx-test-init");
   GitRepository::init(root, "main");
@@ -75,6 +65,139 @@ void test_init_and_commit() {
   assert(!repository.working_diff(1024).empty());
   assert(repository.staged_diff(1024).empty());
 
+  fs::remove_all(root);
+}
+
+void test_identity_and_selective_stage() {
+  const auto root = make_temp_dir("gitx-test-identity-stage");
+  GitRepository::init(root, "main");
+  const auto config = ConfigStore::load_team(root);
+  GitRepository repository(root);
+
+  const auto temporary = repository.set_temporary_identity();
+  assert(!temporary.empty());
+  assert(repository.has_identity());
+  assert(repository.uses_temporary_identity());
+  repository.set_identity("Tester", "tester@example.com");
+  assert(repository.identity_name() == "Tester");
+  assert(repository.identity_email() == "tester@example.com");
+  assert(!repository.uses_temporary_identity());
+
+  write_file(root / "one.txt", "one\n");
+  write_file(root / "two.txt", "two\n");
+  repository.stage_paths({"one.txt"});
+  assert(repository.has_staged_changes());
+  repository.commit("feat(test): stage one file", config);
+  const auto items = repository.status();
+  assert(items.size() == 1);
+  assert(items.front().path == "two.txt");
+  assert(items.front().state.find("未暂存：未跟踪") != std::string::npos);
+
+  fs::remove_all(root);
+}
+
+void test_clone_recovers_invalid_remote_head() {
+  const auto root = make_temp_dir("gitx-test-clone-invalid-head");
+  const auto source = root / "source";
+  const auto server = root / "server.git";
+  GitRepository::init(source, "main");
+  set_identity(source);
+  const auto config = ConfigStore::load_team(source);
+  GitRepository author(source);
+  write_file(source / "hello.txt", "hello\n");
+  author.stage_all();
+  author.commit("feat(test): initial history", config);
+
+  assert(std::system(("git init --bare \"" + server.string() + "\"").c_str()) == 0);
+  author.add_remote("origin", server.string());
+  author.push();
+  assert(std::system(("git --git-dir=\"" + server.string() + "\" symbolic-ref HEAD refs/heads/master").c_str()) == 0);
+
+  const auto copy = root / "copy";
+  GitRepository::clone(server.string(), copy);
+  GitRepository cloned(copy);
+  assert(cloned.current_branch() == "main");
+  assert(cloned.history(1).front().summary == "feat(test): initial history");
+
+  fs::remove_all(root);
+}
+
+void test_revert_local_commit() {
+  const auto root = make_temp_dir("gitx-test-revert-local");
+  GitRepository::init(root, "main");
+  set_identity(root);
+  const auto config = ConfigStore::load_team(root);
+  GitRepository repository(root);
+  write_file(root / "note.txt", "correct\n");
+  repository.stage_all();
+  repository.commit("feat(test): add correct note", config);
+  write_file(root / "note.txt", "incorrect\n");
+  repository.stage_all();
+  repository.commit("fix(test): introduce incorrect note", config);
+  const auto target = repository.history(1).front().id;
+
+  repository.revert_commit(target, config);
+  assert(read_file(root / "note.txt") == "correct\n");
+  assert(repository.status().empty());
+  assert(repository.history(1).front().summary == "fix(revert): 回退 " + target);
+  fs::remove_all(root);
+}
+
+void test_revert_pushed_commit() {
+  const auto root = make_temp_dir("gitx-test-revert-pushed");
+  const auto source = root / "source";
+  const auto server = root / "server.git";
+  GitRepository::init(source, "main");
+  set_identity(source);
+  const auto config = ConfigStore::load_team(source);
+  GitRepository repository(source);
+  write_file(source / "note.txt", "correct\n");
+  repository.stage_all();
+  repository.commit("feat(test): add server note", config);
+  write_file(source / "note.txt", "incorrect\n");
+  repository.stage_all();
+  repository.commit("fix(test): publish incorrect note", config);
+  const auto target = repository.history(1).front().id;
+  assert(std::system(("git init --bare \"" + server.string() + "\"").c_str()) == 0);
+  repository.add_remote("origin", server.string());
+  repository.push();
+
+  repository.revert_commit(target, config);
+  repository.push();
+  const auto copy = root / "copy";
+  GitRepository::clone(server.string(), copy);
+  assert(read_file(copy / "note.txt") == "correct\n");
+  fs::remove_all(root);
+}
+
+void test_revert_conflict_leaves_repository_unchanged() {
+  const auto root = make_temp_dir("gitx-test-revert-conflict");
+  GitRepository::init(root, "main");
+  set_identity(root);
+  const auto config = ConfigStore::load_team(root);
+  GitRepository repository(root);
+  write_file(root / "note.txt", "value=one\n");
+  repository.stage_all();
+  repository.commit("feat(test): add note", config);
+  write_file(root / "note.txt", "value=two\n");
+  repository.stage_all();
+  repository.commit("fix(test): change note", config);
+  const auto target = repository.history(1).front().id;
+  write_file(root / "note.txt", "value=three\n");
+  repository.stage_all();
+  repository.commit("fix(test): change note again", config);
+  const auto count = repository.history(10).size();
+
+  bool rejected = false;
+  try {
+    repository.revert_commit(target, config);
+  } catch (const std::runtime_error& error) {
+    rejected = std::string(error.what()).find("冲突") != std::string::npos;
+  }
+  assert(rejected);
+  assert(read_file(root / "note.txt") == "value=three\n");
+  assert(repository.status().empty());
+  assert(repository.history(10).size() == count);
   fs::remove_all(root);
 }
 
@@ -189,7 +312,7 @@ void test_rebase_and_empty_patch_skip() {
   fs::remove_all(root);
 }
 
-void test_stash_tag_and_status() {
+void test_stash_and_status() {
   const auto root = make_temp_dir("gitx-test-misc");
   GitRepository::init(root, "main");
   set_identity(root);
@@ -205,11 +328,6 @@ void test_stash_tag_and_status() {
   assert(repository.status().empty());
   repository.stash_pop();
   assert(read_file(root / "f.txt") == "dirty\n");
-
-  repository.create_tag("v0.1.0", "release");
-  // Avoid '^{commit}' here: on Windows cmd '^' is the escape character and
-  // would corrupt the rev-parse argument.
-  assert(git_ok(root, "rev-parse v0.1.0"));
 
   fs::remove_all(root);
 }
@@ -227,6 +345,16 @@ int main() {
   git_libgit2_init();
   test_init_and_commit();
   std::cout << "ok: init/commit\n";
+  test_identity_and_selective_stage();
+  std::cout << "ok: identity/selective stage\n";
+  test_clone_recovers_invalid_remote_head();
+  std::cout << "ok: clone recovers invalid remote HEAD\n";
+  test_revert_local_commit();
+  std::cout << "ok: local revert\n";
+  test_revert_pushed_commit();
+  std::cout << "ok: pushed revert\n";
+  test_revert_conflict_leaves_repository_unchanged();
+  std::cout << "ok: revert conflict leaves repository unchanged\n";
   test_branch_switch_syncs_index_and_worktree();
   std::cout << "ok: branch switch syncs index and worktree\n";
   test_merge_conflict_interactive("o", "main side\n");
@@ -235,7 +363,7 @@ int main() {
   std::cout << "ok: merge conflict (take theirs)\n";
   test_rebase_and_empty_patch_skip();
   std::cout << "ok: rebase with empty-patch skip\n";
-  test_stash_tag_and_status();
-  std::cout << "ok: stash/tag/status\n";
+  test_stash_and_status();
+  std::cout << "ok: stash/status\n";
   return 0;
 }
